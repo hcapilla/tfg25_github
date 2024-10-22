@@ -4,7 +4,7 @@ import easyocr
 import svgwrite
 
 # Variable global para el path de la imagen
-IMAGE_PATH = 'img/img_test_v3.png'
+IMAGE_PATH = 'img/img_test_2.png'
 
 def create_svg_with_text(image_path, text_data):
     # Load the image using OpenCV
@@ -42,7 +42,7 @@ def text_detection(image_path):
     img = cv2.imread(image_path)
 
     # reader
-    reader = easyocr.Reader(['es'], gpu=True)
+    reader = easyocr.Reader(['en', 'es', 'de'], gpu=True)
 
     # Detect text
     text_data = reader.readtext(img)
