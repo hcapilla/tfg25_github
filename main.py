@@ -1,6 +1,7 @@
 # Program
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # SVG 
 import svgwrite as svg
@@ -28,26 +29,23 @@ def ReSin_config():
     return s_input_path, s_language, s_ocr_confidence_threshold
 
 def TEST_showConfidence(detection):
-    # Acceder a los text_lines de detection[0]
     text_lines = detection[0].text_lines
+    text_lines_sorted = sorted(text_lines, key=lambda line: line.confidence)
 
-    # Ordenar text_lines por el atributo 'confidence' de menor a mayor
-    text_lines_ordenado = sorted(text_lines, key=lambda line: line.confidence)
-
-    # Mostrar la lista ordenada
-    for item in text_lines_ordenado:
+    for item in text_lines_sorted:
         print(f"Text: {item.text}, Confidence: {item.confidence}")
 
 def TEST_drawBoundingBoxes(text_line, output_svg):
-    if text_line.confidence < 0.7:
+    # NOTE: those are common thresholds. May vary depending on the number of quadrants and the image
+    if text_line['confidence'] < 0.7:
         boundingBox_color = "red" 
-    elif text_line.confidence < 0.82: 
+    elif text_line['confidence'] < 0.82: 
         boundingBox_color = "yellow"
     else:
         boundingBox_color = "blue"
     
     output_svg.add(output_svg.polygon(
-        points=text_line.polygon,
+        points=text_line['polygon'],
         fill="none",
         stroke=boundingBox_color,
         stroke_width=2
@@ -62,57 +60,91 @@ def createOutputName(output_dir, base_name):
     output_name = f"{base_name}.svg"
     output_path = os.path.join(output_dir, output_name)
     
-    # Si no existe un archivo con este nombre, lo retornamos
     if not os.path.exists(output_path):
         return output_path
 
-    # Si ya existe, encontrar el número más pequeño disponible
     counter = 1
     while os.path.exists(os.path.join(output_dir, f"{base_name}({counter}).svg")):
         counter += 1
     
     return os.path.join(output_dir, f"{base_name}({counter}).svg")
 
-def text_detection (input_path, language, ocr_confidence_threshold):
+def process_quadrant(quadrant, offset_x, offset_y, language, ocr_confidence_threshold):
+
+    # OCR
+    det_processor, det_model = load_det_processor(), load_det_model()
+    rec_model, rec_processor = load_rec_model(), load_rec_processor()
+
+    detection = run_ocr([quadrant], [language], det_model, det_processor, rec_model, rec_processor)
+    detection = deleteByThreshold(detection, ocr_confidence_threshold)
+
+    adjusted_text_lines = []
+    for text_line in detection[0].text_lines:
+        adjusted_text_line = {
+            "text": text_line.text,
+            "confidence": text_line.confidence,
+            "bbox": [coord + offset_x if j % 2 == 0 else coord + offset_y 
+                     for j, coord in enumerate(text_line.bbox)],
+            "polygon": [(x + offset_x, y + offset_y) for x, y in text_line.polygon]
+        }
+        adjusted_text_lines.append(adjusted_text_line)
+    
+    return adjusted_text_lines
+
+def image_preprocessing(image_path, language, ocr_confidence_threshold):
+    with Image.open(image_path) as img:
+        width, height = img.size
+        quadrant_width = width // 2
+        quadrant_height = height // 2
+
+        quadrants = [
+            (img.crop((0, 0, quadrant_width, quadrant_height)), 0, 0),                                      # Top-left
+            (img.crop((quadrant_width, 0, width, quadrant_height)), quadrant_width, 0),                     # Top-right
+            (img.crop((0, quadrant_height, quadrant_width, height)), 0, quadrant_height),                   # Bottom-left
+            (img.crop((quadrant_width, quadrant_height, width, height)), quadrant_width, quadrant_height)   # Bottom-right
+        ]
+
+        full_detections = []
+        
+        # Paralel OCR processing
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_quadrant, quadrant, offset_x, offset_y, language, ocr_confidence_threshold) 
+                       for quadrant, offset_x, offset_y in quadrants]
+
+            for future in as_completed(futures):
+                full_detections.extend(future.result())
+
+        return full_detections, width, height
+
+
+def text_detection(input_path, language, ocr_confidence_threshold):
     for input_image in os.listdir(input_path):
         if input_image.lower().endswith(('.png', '.jpg')):
             image_path = os.path.join(input_path, input_image)
-
-            # OCR.
-            with Image.open(image_path) as image:
-                det_processor, det_model = load_det_processor(), load_det_model()
-                rec_model, rec_processor = load_rec_model(), load_rec_processor()
-
-                detection = run_ocr([image], [language], det_model, det_processor, rec_model, rec_processor)
-                detection = deleteByThreshold(detection, ocr_confidence_threshold)
-
-                # TODO: En el último paso de ReSin toda esta parte en adelante será modificada
-                # SVG: Text write.
-                # [MEJORA] Image_preprocessing: Dividir la imagen en 4 cuadrantes y analizarlas por separado
-                
-                output_path = createOutputName('output', os.path.splitext(input_image)[0])
-
-            TEST_showConfidence(detection)
-
-            image_width = detection[0].image_bbox[2] - detection[0].image_bbox[0]
-            image_height = detection[0].image_bbox[3] - detection[0].image_bbox[1]
             
+            detections, image_width, image_height = image_preprocessing(image_path, language, ocr_confidence_threshold)
+            
+            # Final SVG generation
+            output_path = createOutputName('output', os.path.splitext(input_image)[0])
             output_svg = svg.Drawing(output_path, size=(image_width, image_height))
-
-            for text_line in detection[0].text_lines:
-                text_x = (text_line.bbox[0] + text_line.bbox[2]) / 2
-                text_y = (text_line.bbox[1] + text_line.bbox[3]) / 2
-                font_height = (text_line.bbox[3] - text_line.bbox[1]) * 0.9
-
+            
+            for text_line in detections:
+                text_x = (text_line["bbox"][0] + text_line["bbox"][2]) / 2
+                text_y = (text_line["bbox"][1] + text_line["bbox"][3]) / 2
+                font_height = (text_line["bbox"][3] - text_line["bbox"][1]) * 0.9
+                
                 TEST_drawBoundingBoxes(text_line, output_svg)
 
-                output_svg.add(output_svg.text(text_line.text,
-                                               insert=(text_x, text_y),
-                                               text_anchor = "middle",
-                                               alignment_baseline = "middle",
-                                               font_size = font_height,
-                                               font_weight = "bold",
-                                               font_family = "Tahoma"))
+                output_svg.add(output_svg.text(
+                    text_line["text"],
+                    insert=(text_x, text_y),
+                    text_anchor="middle",
+                    alignment_baseline="middle",
+                    font_size="15px",
+                    font_weight="bold",
+                    font_family="Tahoma"
+                ))
+
             output_svg.save()
             
 
