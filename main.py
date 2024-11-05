@@ -58,6 +58,20 @@ def deleteByThreshold(detection, ocr_confidence_threshold):
 
     return detection
 
+def createOutputName(output_dir, base_name):
+    output_name = f"{base_name}.svg"
+    output_path = os.path.join(output_dir, output_name)
+    
+    # Si no existe un archivo con este nombre, lo retornamos
+    if not os.path.exists(output_path):
+        return output_path
+
+    # Si ya existe, encontrar el número más pequeño disponible
+    counter = 1
+    while os.path.exists(os.path.join(output_dir, f"{base_name}({counter}).svg")):
+        counter += 1
+    
+    return os.path.join(output_dir, f"{base_name}({counter}).svg")
 
 def text_detection (input_path, language, ocr_confidence_threshold):
     for input_image in os.listdir(input_path):
@@ -75,10 +89,10 @@ def text_detection (input_path, language, ocr_confidence_threshold):
                 # TODO: En el último paso de ReSin toda esta parte en adelante será modificada
                 # SVG: Text write.
                 # [MEJORA] Image_preprocessing: Dividir la imagen en 4 cuadrantes y analizarlas por separado
-                output_name = os.path.splitext(input_image)[0] + ".svg"
-                output_path = os.path.join('output/',output_name)
+                
+                output_path = createOutputName('output', os.path.splitext(input_image)[0])
 
-            #TEST_showConfidence(detection)
+            TEST_showConfidence(detection)
 
             image_width = detection[0].image_bbox[2] - detection[0].image_bbox[0]
             image_height = detection[0].image_bbox[3] - detection[0].image_bbox[1]
