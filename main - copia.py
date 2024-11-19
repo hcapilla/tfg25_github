@@ -4,7 +4,6 @@ import os
 
 # Multi-thread
 from concurrent.futures import ThreadPoolExecutor
-import threading
 
 # Calculus
 from math import sqrt
@@ -59,17 +58,6 @@ def TEST_drawBoundingBoxes(text_line, output_svg):
         stroke=boundingBox_color,
         stroke_width=2
     ))
-
-def TEST_DrawQuadrants(svg_drawing, quadrants):
-    for quadrant in quadrants:
-        x1, y1, x2, y2 = quadrant["Coordinates"]
-        svg_drawing.add(svg_drawing.rect(
-            insert=(x1, y1),
-            size=(x2 - x1, y2 - y1),
-            fill="none",  # Sin relleno
-            stroke="green",  # Borde verde
-            stroke_width=2  # Grosor del borde
-        ))
     
 def deleteByThreshold(text_lines, ocr_confidence_threshold):
     # Filtra las líneas de texto basándose en el umbral de confianza
@@ -181,11 +169,12 @@ def merge_text_lines(quadrants, text_lines_with_quadrant, radius=10):
             if line == other_line:
                 continue
 
-            # Calcular distancia entre los textos
             dist = distance((line.bbox[0], line.bbox[1]), (other_line.bbox[0], other_line.bbox[1]))
             if dist <= radius:
-                # Comparar confianza y descartar el de menor confianza
-                if line.confidence < other_line.confidence:
+                center_line = distance((line.bbox[0], line.bbox[1]), calculate_center(quadrants[quadrant_id]["Coordinates"]))
+                center_other = distance((other_line.bbox[0], other_line.bbox[1]), calculate_center(quadrants[other_quadrant_id]["Coordinates"]))
+
+                if center_line > center_other:
                     keep = False
                     break
 
@@ -207,15 +196,6 @@ def text_detection(input_path, language, ocr_confidence_threshold):
                 nQuadrantsH, nQuadrantsV = 1, 3
                 quadrants = createQuadrants(image, nQuadrantsH, nQuadrantsV)
 
-                # Crear archivo SVG para la imagen final
-                output_path = createOutputName("output", os.path.splitext(input_image)[0])
-                image_width = image.width
-                image_height = image.height
-                output_svg = svg.Drawing(output_path, size=(image_width, image_height))
-
-                # Dibujar cuadrantes en el SVG
-                TEST_DrawQuadrants(output_svg, quadrants)
-
                 # OCR en cada cuadrante
                 text_lines_with_quadrant = []
                 for quadrant_id, quadrant in enumerate(quadrants):
@@ -236,11 +216,18 @@ def text_detection(input_path, language, ocr_confidence_threshold):
                 # Consolidar texto final
                 final_text_lines = merge_text_lines(quadrants, text_lines_with_quadrant)
 
-                # Dibujar textos detectados en el SVG
+                # Procesar texto final para generar la salida
+                output_path = createOutputName("output", os.path.splitext(input_image)[0])
+                image_width = image.width
+                image_height = image.height
+                output_svg = svg.Drawing(output_path, size=(image_width, image_height))
+
                 for text_line in final_text_lines:
                     text_x = (text_line.bbox[0] + text_line.bbox[2]) / 2
                     text_y = (text_line.bbox[1] + text_line.bbox[3]) / 2
                     font_height = (text_line.bbox[3] - text_line.bbox[1]) * 0.9
+
+                    TEST_drawBoundingBoxes(text_line, output_svg)
 
                     output_svg.add(output_svg.text(
                         text_line.text,
@@ -252,7 +239,6 @@ def text_detection(input_path, language, ocr_confidence_threshold):
                         font_family="Tahoma"
                     ))
 
-                # Guardar SVG final con cuadrantes y textos
                 output_svg.save()
             
 
