@@ -1,37 +1,58 @@
-# Program
+# Global
 import argparse
 import os
 from collections import Counter
+import random
 
 # SVG 
 import svgwrite as svg
+from xml.etree import ElementTree as ET
 
 # OCR
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from surya.ocr import run_ocr
 from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
 from surya.model.recognition.model import load_model as load_rec_model
 from surya.model.recognition.processor import load_processor as load_rec_processor
 
-# AMBER
-from ultralytics import YOLO
+# Template matching
+import cv2
+import numpy as np
 
 def ReSin_config():
     parser = argparse.ArgumentParser(description="ReSin configuration")
 
-    # OCR.
+    # GLOBAL.
+    parser.add_argument('--workspace', type=str, default='factory1/', help='Current factory workspace')
     parser.add_argument('--input', type=str, default='input/', help='Input image folder')
-    parser.add_argument('--output', type=str, default='output/', help='Output image folder')
-    parser.add_argument('--language', type=str, default='en', help='Languages')
+
+    # OCR
+    parser.add_argument('--ocr_output', type=str, default='output_ocr/', help='Output OCR image folder')
+    parser.add_argument('--ocr_language', type=str, default='en', help='Languages')
     parser.add_argument('--ocr_confidence_threshold', type=float, default='0.7', help='OCR Confidence threshold')
+
+    # TEMPLATE MATCHING
+    parser.add_argument('--template_library', type=str, default='library/', help='Template folder')
+    parser.add_argument('--template_output', type=str, default='output_template/', help='Output Post-TemplateMatching folder')
+
+
     arguments = parser.parse_args()
 
+    s_workspace_path = arguments.workspace
     s_input_path = arguments.input
-    s_output_path = arguments.output
-    s_language = arguments.language.split(',')
+
+    s_ocr_output_path = arguments.ocr_output
+    s_ocr_language = arguments.ocr_language.split(',')
     s_ocr_confidence_threshold = arguments.ocr_confidence_threshold
 
-    return s_input_path, s_output_path, s_language, s_ocr_confidence_threshold
+    s_template_library = arguments.template_library
+    s_template_output_path = arguments.template_output
+
+    s_input_path, s_ocr_output_path, s_template_library, s_template_output_path = CreatePaths(
+        s_workspace_path, s_input_path, s_ocr_output_path, s_template_library, s_template_output_path
+    )
+
+    return s_input_path, s_workspace_path, s_ocr_output_path, s_ocr_language, s_ocr_confidence_threshold, s_template_library, s_template_output_path
 
 def TEST_showConfidence(detection):
     text_lines = detection[0].text_lines
@@ -67,12 +88,57 @@ def TEST_drawSVGBoundingBoxes(text_line, output_svg):
         stroke_width=2
     ))
     
+def CreatePaths(workspace, input_path, ocr_output_path, template_library, template_output_path):
+    # Añadir el workspace como prefijo a los paths
+    input_path = os.path.join(workspace, input_path)
+    ocr_output_path = os.path.join(workspace, ocr_output_path)
+    template_library = os.path.join(workspace, template_library)
+    template_output_path = os.path.join(workspace, template_output_path)
+
+    # Crear los directorios si no existen
+    for path in [input_path, ocr_output_path, template_library, template_output_path]:
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+    return input_path, ocr_output_path, template_library, template_output_path
+
 def deleteByThreshold(detection, ocr_confidence_threshold):
-    detection[0].text_lines = [line for line in detection[0].text_lines if line.confidence >= ocr_confidence_threshold]
+    def is_valid_line(line):
+        # Verifica que la línea tenga confianza suficiente
+        if line.confidence < ocr_confidence_threshold:
+            return False
+
+        # Verifica que la línea no tenga solo un carácter
+        if len(line.text) == 1:
+            return False
+
+        # Verifica que la línea no tenga solo dos caracteres
+        if len(line.text) == 2:
+            return False
+
+        # Verifica que la línea no esté compuesta completamente por el mismo carácter
+        if len(set(line.text)) == 1:
+            return False
+
+        # Elimina todo lo que haya después de "(" si no contiene ")"
+        if "(" in line.text and ")" not in line.text:
+            line.text = line.text.split("(")[0]
+
+        # Elimina todo lo que haya después de "[" si no contiene "]"
+        if "[" in line.text and "]" not in line.text:
+            line.text = line.text.split("[")[0]
+
+        return True
+
+    # Filtra las líneas según las condiciones
+    detection[0].text_lines = [line for line in detection[0].text_lines if is_valid_line(line)]
 
     return detection
 
 def createOutputName(output_dir, base_name):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     output_name_svg = f"{base_name}.svg"
     output_name_png = f"{base_name}.png"
 
@@ -91,6 +157,46 @@ def createOutputName(output_dir, base_name):
     
     return output_path_svg, output_path_png
 
+def embed_svg(output_svg, svg_file, x, y, width, height, rotation):
+    def parse_dimension(value):
+        """Convierte dimensiones como '5.3646in' o '120px' a un número flotante."""
+        if "in" in value:
+            return float(value.replace("in", "")) * 96  # 1in = 96px
+        elif "cm" in value:
+            return float(value.replace("cm", "")) * 37.7952755906  # 1cm = 37.79px
+        elif "mm" in value:
+            return float(value.replace("mm", "")) * 3.77952755906  # 1mm = 3.779px
+        elif "px" in value:
+            return float(value.replace("px", ""))
+        else:
+            return float(value)  # Asume que es un valor numérico puro
+
+    # Leer y procesar el archivo SVG
+    tree = ET.parse(svg_file)
+    root = tree.getroot()
+
+    # Extraer y convertir las dimensiones
+    svg_width = parse_dimension(root.attrib.get("width", "100px"))
+    svg_height = parse_dimension(root.attrib.get("height", "100px"))
+
+    # Calcular escala
+    scale_x = width / svg_width
+    scale_y = height / svg_height
+    transform = f"translate({x},{y}) scale({scale_x},{scale_y})"
+    if rotation != 0:
+        cx, cy = x + width / 2, y + height / 2  # Centro para rotar
+        transform += f" rotate({rotation},{cx},{cy})"
+
+    # Cargar el contenido SVG externo como texto
+    with open(svg_file, "r") as f:
+        svg_content = f.read()
+
+    # Crear un grupo y añadir el contenido
+    group = output_svg.g(transform=transform)
+    group.add(output_svg.text(svg_content, insert=(0, 0)))
+    output_svg.add(group)
+
+# OCR
 def text_detection(input_path, output_path, language, ocr_confidence_threshold):
     output_images = []
 
@@ -150,123 +256,258 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                 # Guardar la imagen procesada con las Bounding Boxes sustituidas
                 image.save(output_path_PNG)
                 output_svg.save()
-                output_images.append(output_path_PNG)
+                output_images.append([output_path_PNG, output_path_SVG])
 
+    print("OCR text detection completado.")
     return output_images
 
-def model_apply_on_images(image_paths):
+# Template matching
+def calculate_iou(box1, box2):
+    """
+    Calcula el IoU (Intersection over Union) entre dos bounding boxes.
+    Las bounding boxes se representan como (x, y, ancho, alto).
+    """
+    x1, y1, w1, h1 = box1
+    x2, y2, w2, h2 = box2
 
-    model = YOLO("C:/Users/Mi Pc/OneDrive - UAB/Documentos/TFG 25/Amber Detection Model/Amber4/weights/best.pt")
+    # Coordenadas de la intersección
+    xi1 = max(x1, x2)
+    yi1 = max(y1, y2)
+    xi2 = min(x1 + w1, x2 + w2)
+    yi2 = min(y1 + h1, y2 + h2)
 
-    for image_path in image_paths:
-        results = model.predict(source=image_path, conf=0.05)
-        with Image.open(image_path) as original_image:
-            draw = ImageDraw.Draw(original_image)
+    # Área de intersección
+    inter_width = max(0, xi2 - xi1)
+    inter_height = max(0, yi2 - yi1)
+    inter_area = inter_width * inter_height
 
-            for result in results:
-                boxes = result.boxes.xyxy.cpu().numpy()  # Bounding boxes
-                confs = result.boxes.conf.cpu().numpy()  # Confidences
-                classes = result.boxes.cls.cpu().numpy()  # Class IDs
-                names = model.names  # Obtener nombres de las clases
+    # Áreas de las cajas
+    area1 = w1 * h1
+    area2 = w2 * h2
 
-                for box, conf, cls in zip(boxes, confs, classes):
-                    x1, y1, x2, y2 = map(int, box)
-                    label = f"{names[int(cls)]} {conf:.2f}"
-                    color = (0, 255, 0)  # Color verde para las cajas
+    # Área de unión
+    union_area = area1 + area2 - inter_area
 
-                    # Dibujar la caja
-                    draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+    # Evitar divisiones por cero
+    if union_area == 0:
+        return 0
 
-                    # Dibujar el texto
-                    try:
-                        font = ImageFont.truetype("arial.ttf", 16)  # Cargar fuente
-                    except IOError:
-                        font = ImageFont.load_default()  # Usar fuente predeterminada si no se encuentra "arial.ttf"
+    # IoU
+    return inter_area / union_area
 
-                    # Calcular la posición del texto y el fondo
-                    text_bbox = draw.textbbox((x1, y1), label, font=font)
-                    text_background = [(text_bbox[0], text_bbox[1] - 2), (text_bbox[2] + 2, text_bbox[3])]
-                    draw.rectangle(text_background, fill=color)
-                    draw.text((x1, y1), label, fill="black", font=font)
+def TemplateMatching(processed_images, output_path, library_path, final_svg_path, iou_threshold=0.5, template_threshold=0.55):
+    if not processed_images:
+        print("No hay imágenes procesadas para analizar.")
+        return
 
-            # Guardar la imagen procesada con el sufijo "_Amber"
-            output_path = os.path.splitext(image_path)[0] + "_Amber.png"
-            original_image.save(output_path)
-            print(f"Modelo aplicado a {image_path}, resultado guardado en {output_path}")
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
 
-def model_apply_on_images_by_quadrants(image_paths):
+    # Crear el SVG final
+    final_svg = svg.Drawing(final_svg_path)
 
-    model = YOLO("C:/Users/Mi Pc/OneDrive - UAB/Documentos/TFG 25/Amber Detection Model/Amber4/weights/best.pt")
+    # Colores únicos para las clases
+    class_colors = {}
 
-    for image_path in image_paths:
-        with Image.open(image_path) as img:
-            width, height = img.size
-            third_width, third_height = width // 3, height // 3
+    # Iterar sobre las imágenes procesadas
+    for image_pair in processed_images:
+        if not isinstance(image_pair, list) or len(image_pair) < 2:
+            print(f"Advertencia: Estructura incorrecta en processed_images: {image_pair}.")
+            continue
 
-            quadrants = [
-                (img.crop((0, 0, third_width, third_height)), 0, 0, "Top-left"),
-                (img.crop((third_width, 0, 2 * third_width, third_height)), third_width, 0, "Top-center"),
-                (img.crop((2 * third_width, 0, width, third_height)), 2 * third_width, 0, "Top-right"),
-                (img.crop((0, third_height, third_width, 2 * third_height)), 0, third_height, "Center-left"),
-                (img.crop((third_width, third_height, 2 * third_width, 2 * third_height)),
-                 third_width, third_height, "Center-center"),
-                (img.crop((2 * third_width, third_height, width, 2 * third_height)), 2 * third_width, third_height, "Center-right"),
-                (img.crop((0, 2 * third_height, third_width, height)), 0, 2 * third_height, "Bottom-left"),
-                (img.crop((third_width, 2 * third_height, 2 * third_width, height)),
-                 third_width, 2 * third_height, "Bottom-center"),
-                (img.crop((2 * third_width, 2 * third_height, width, height)), 2 * third_width, 2 * third_height, "Bottom-right")
-            ]
+        png_path, svg_path = image_pair
 
-            # Procesar cada cuadrante con el modelo AMBER
-            for quadrant, offset_x, offset_y, quadrant_id in quadrants:
-                print(f"Processing quadrant: {quadrant_id}")
-                results = model.predict(source=quadrant, conf=0.05)
+        if not os.path.exists(png_path):
+            print(f"Advertencia: La imagen PNG {png_path} no existe.")
+            continue
 
-                draw = ImageDraw.Draw(img)
+        input_image = cv2.imread(png_path)
+        if input_image is None:
+            print(f"Advertencia: No se pudo cargar la imagen {png_path}. Se omitirá.")
+            continue
 
-                for result in results:
-                    boxes = result.boxes.xyxy.cpu().numpy()
-                    confs = result.boxes.conf.cpu().numpy()
-                    classes = result.boxes.cls.cpu().numpy()
-                    names = model.names
+        gray_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2GRAY)
 
-                    for box, conf, cls in zip(boxes, confs, classes):
-                        # Ajustar coordenadas con el desplazamiento del cuadrante
-                        x1, y1, x2, y2 = [int(coord + offset_x if i % 2 == 0 else coord + offset_y)
-                                          for i, coord in enumerate(box)]
-                        label = f"{names[int(cls)]} {conf:.2f}"
-                        color = (0, 255, 0)
+        # Realizar detecciones iniciales
+        detections = []
+        for class_name in os.listdir(library_path):
+            class_folder = os.path.join(library_path, class_name)
+            templates_folder = os.path.join(class_folder, "templates")
 
-                        # Dibujar la Bounding Box
-                        draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+            if not os.path.exists(templates_folder):
+                continue
 
-                        # Dibujar el texto
-                        try:
-                            font = ImageFont.truetype("arial.ttf", 16)
-                        except IOError:
-                            font = ImageFont.load_default()
+            print(f"Accediendo a la carpeta de templates: {templates_folder}")
 
-                        text_size = font.getbbox(label)
-                        text_background = [(x1, y1 - text_size[3] - 2), (x1 + text_size[2] + 2, y1)]
-                        draw.rectangle(text_background, fill=color)
-                        draw.text((x1, y1 - text_size[3]), label, fill="black", font=font)
+            for template_file in os.listdir(templates_folder):
+                template_path = os.path.join(templates_folder, template_file)
+                template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
 
-            # Guardar la imagen procesada con el sufijo "_Amber"
-            output_path = os.path.splitext(image_path)[0] + "_Amber.png"
-            img.save(output_path)
-            print(f"Modelo aplicado a {image_path}, resultado guardado en {output_path}")
+                if template is None:
+                    continue
 
+                for rotation_angle in [0, 90, 180, 270]:
+                    rotated_template = template
+                    if rotation_angle != 0:
+                        # Rotar el template en ángulos de 90°, 180°, y 270°
+                        rotated_template = cv2.rotate(template, {
+                            90: cv2.ROTATE_90_CLOCKWISE,
+                            180: cv2.ROTATE_180,
+                            270: cv2.ROTATE_90_COUNTERCLOCKWISE
+                        }[rotation_angle])
+
+                    result = cv2.matchTemplate(gray_image, rotated_template, cv2.TM_CCOEFF_NORMED)
+                    locations = np.where(result >= template_threshold)
+
+                    for point in zip(*locations[::-1]):
+                        top_left = point
+                        bbox = (top_left[0], top_left[1], rotated_template.shape[1], rotated_template.shape[0])
+
+                        overlaps = False
+                        for existing_bbox in detections:
+                            if calculate_iou(bbox, existing_bbox[:4]) > iou_threshold:
+                                overlaps = True
+                                break
+
+                        if not overlaps:
+                            detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
+
+        for x, y, w, h, rotation, class_name in detections:
+            if class_name not in class_colors:
+                class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
+
+            color = tuple(int(c) for c in class_colors[class_name].strip("rgb()").split(","))
+            rotation_display = rotation if rotation in [90, 180, 270] else 0
+            cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
+            cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+
+        output_image_path = os.path.join(output_path, os.path.basename(png_path))
+        cv2.imwrite(output_image_path, input_image)
+        print(f"Imagen inicial guardada con bounding boxes: {output_image_path}")
+
+        while True:
+            roi = cv2.selectROI("Selecciona la plantilla", input_image, showCrosshair=True)
+            cv2.destroyWindow("Selecciona la plantilla")
+
+            # Verificar si el usuario presionó ESC o seleccionó una región inválida
+            if roi[2] == 0 or roi[3] == 0:
+                print("Selección terminada o región inválida.")
+                break
+
+            # Extraer la plantilla seleccionada
+            template = gray_image[int(roi[1]):int(roi[1] + roi[3]), int(roi[0]):int(roi[0] + roi[2])]
+            if template.size == 0:
+                print("Error: No se seleccionó una plantilla válida. Intente nuevamente.")
+                continue
+
+            # Pedir al usuario la clase del elemento
+            class_name = input("Introduce la clase a la que pertenece el elemento seleccionado: ")
+            if not class_name:
+                print("Clase no válida. Intente nuevamente.")
+                continue
+
+            # Crear carpeta para la clase si no existe en la librería
+            class_folder = os.path.join(library_path, class_name)
+            if not os.path.exists(class_folder):
+                os.makedirs(class_folder)
+
+            templates_folder = os.path.join(class_folder, "templates")
+            if not os.path.exists(templates_folder):
+                os.makedirs(templates_folder)
+
+            # Guardar el template original y variaciones
+            iteration = 0
+            height, width = template.shape[:2]
+
+            # Aumentar dimensiones iterativamente
+            while width < 2 * template.shape[1] and height < 2 * template.shape[0]:
+                if iteration % 2 == 0:
+                    width += 2
+                else:
+                    height += 2
+
+                resized_template = cv2.resize(template, (width, height))
+                cv2.imwrite(os.path.join(templates_folder, f"template_increase_{iteration}.png"), resized_template)
+                iteration += 1
+
+            # Reducir dimensiones iterativamente
+            width, height = template.shape[1], template.shape[0]
+            iteration = 0
+
+            while width > template.shape[1] // 2 and height > template.shape[0] // 2:
+                if iteration % 2 == 0:
+                    width -= 2
+                else:
+                    height -= 2
+
+                resized_template = cv2.resize(template, (max(width, 1), max(height, 1)))
+                cv2.imwrite(os.path.join(templates_folder, f"template_decrease_{iteration}.png"), resized_template)
+                iteration += 1
+
+            print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
+
+            # Aplicar template matching para la clase seleccionada
+            detections = []
+            for template_file in os.listdir(templates_folder):
+                template_path = os.path.join(templates_folder, template_file)
+                template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+
+                if template is None:
+                    continue
+
+                for rotation_angle in [0, 90, 180, 270]:
+                    rotated_template = template
+                    if rotation_angle != 0:
+                        rotated_template = cv2.rotate(template, {
+                            90: cv2.ROTATE_90_CLOCKWISE,
+                            180: cv2.ROTATE_180,
+                            270: cv2.ROTATE_90_COUNTERCLOCKWISE
+                        }[rotation_angle])
+
+                    result = cv2.matchTemplate(gray_image, rotated_template, cv2.TM_CCOEFF_NORMED)
+                    locations = np.where(result >= template_threshold)
+
+                    for point in zip(*locations[::-1]):
+                        top_left = point
+                        bbox = (top_left[0], top_left[1], rotated_template.shape[1], rotated_template.shape[0])
+
+                        overlaps = False
+                        for existing_bbox in detections:
+                            if calculate_iou(bbox, existing_bbox[:4]) > iou_threshold:
+                                overlaps = True
+                                break
+
+                        if not overlaps:
+                            detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
+
+            for x, y, w, h, rotation, class_name in detections:
+                if class_name not in class_colors:
+                    class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
+
+                color = tuple(int(c) for c in class_colors[class_name].strip("rgb()").split(","))
+                rotation_display = rotation if rotation in [90, 180, 270] else 0
+                cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
+                cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+
+            output_image_path = os.path.join(output_path, os.path.basename(png_path))
+            cv2.imwrite(output_image_path, input_image)
+            print(f"Imagen actualizada guardada con bounding boxes: {output_image_path}")
+
+    # Guardar el SVG final
+    final_svg.save()
+    print("SVG final generado con éxito.")
 
 
 def main():
     # OCR arguments
-    input_path, output_path, language, ocr_confidence_threshold = ReSin_config()
+    input_path, workspace, ocr_output_path, ocr_language, ocr_confidence_threshold, template_library, template_output_path = ReSin_config()
 
     # OCR
-    processed_images = text_detection(input_path, output_path, language, ocr_confidence_threshold)
-    
-    # Amber
-    model_apply_on_images_by_quadrants(processed_images)
+    processed_images = text_detection(input_path, ocr_output_path, ocr_language, ocr_confidence_threshold)
+
+    # Template matching
+    final_svg_path = os.path.join(template_output_path, "final_diagram.svg")
+    TemplateMatching(processed_images, template_output_path, template_library, final_svg_path)
 
     print('Done')
 
