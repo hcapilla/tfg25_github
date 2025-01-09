@@ -570,20 +570,27 @@ def parse_dimension(value):
     else:
         return float(value)  # Asume un valor numérico puro si no hay unidad
 
-def insert_detected_svgs(detections, library_path, processed_images, output_directory):
+def insert_detected_svgs(detections, library_path, processed_images, output_directory, scale_factor=0.8):
     """
     Inserta elementos SVG detectados en los archivos SVG correspondientes.
 
     Args:
-        processed_images (list): Lista con pares de rutas [(png_path, svg_path), ...].
         detections (list): Lista de detecciones en formato [(x, y, w, h, rotation, class_name), ...].
-        library_path (str): Ruta donde están los SVG de las clases detectadas (en library/general).
+        library_path (str): Ruta donde están los SVG de las clases detectadas.
+        processed_images (list): Lista con pares de rutas [(png_path, svg_path, res), ...].
         output_directory (str): Directorio para guardar los archivos SVG actualizados.
+        scale_factor (float): Factor de escala para reducir el tamaño de los elementos (default: 0.8).
     """
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    for png_path, svg_path, res2 in processed_images:
+    for processed_image in processed_images:
+        if len(processed_image) < 2:
+            print(f"Advertencia: Estructura incorrecta en processed_images: {processed_image}.")
+            continue
+
+        png_path, svg_path = processed_image[:2]  # Solo toma los dos primeros elementos (ignorar el resto)
+
         if not os.path.exists(svg_path):
             print(f"El archivo SVG base '{svg_path}' no existe. Se omitirá.")
             continue
@@ -632,8 +639,8 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
                 svg_width = parse_dimension(class_root.attrib.get("width", "100px"))
                 svg_height = parse_dimension(class_root.attrib.get("height", "100px"))
 
-                # Calcular escalas manteniendo la relación de aspecto
-                scale = min(w / svg_width, h / svg_height)
+                # Calcular escalas manteniendo la relación de aspecto y aplicando el factor de reducción
+                scale = min(w / svg_width, h / svg_height) * scale_factor
 
                 # Crear un grupo (<g>) con las transformaciones necesarias
                 cx, cy = x + (w / 2), y + (h / 2)
@@ -667,6 +674,7 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
             print(f"Archivo SVG actualizado guardado en: {output_svg_path}")
         except Exception as e:
             print(f"Error al guardar el archivo SVG en '{output_svg_path}': {e}")
+
 
 
 
