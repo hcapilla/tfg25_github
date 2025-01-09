@@ -34,7 +34,7 @@ def ReSin_config():
     # TEMPLATE MATCHING
     parser.add_argument('--template_library', type=str, default='library/', help='Template folder')
     parser.add_argument('--template_output', type=str, default='output_template/', help='Output Post-TemplateMatching folder')
-    parser.add_argument('--template_confidence_threshold', type=float, default='0.6', help='OCR Confidence threshold')
+    parser.add_argument('--template_confidence_threshold', type=float, default='0.55', help='OCR Confidence threshold')
     parser.add_argument('--iou_confidence_threshold', type=float, default='0.5', help='OCR Confidence threshold')
 
 
@@ -238,6 +238,8 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
 
                 draw = ImageDraw.Draw(image)
 
+                text_detections = []  # Lista para almacenar las detecciones de texto
+
                 for text_line in detection[0].text_lines:
                     # Extraer las coordenadas de la Bounding Box
                     x_min, y_min = int(text_line.bbox[0]), int(text_line.bbox[1])
@@ -256,10 +258,6 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                     font_height = (text_line.bbox[3] - text_line.bbox[1]) * 0.9
 
                     # Ajustar el tamaño del texto basado en el rango del font_height
-                    # Si el font height es menor a 10, será 15.
-                    # Si el font height es entre 10-20 será 15.
-                    # Si el font height es entre 20-30 será 25.
-                    # Si el font height es entre 30-40 será 35.
                     if 0 <= font_height <= 20:
                         font_size = 15
                     elif 20 < font_height <= 30:
@@ -281,13 +279,23 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                         font_family="Tahoma"
                     ))
 
+                    # Añadir la detección de texto con el flag
+                    text_detections.append({
+                        "bbox": [x_min, y_min, x_max, y_max],
+                        "text": text_line.text,
+                        "flag": "text"
+                    })
+
                 # Guardar la imagen procesada con las Bounding Boxes sustituidas
                 image.save(output_path_PNG)
                 output_svg.save()
-                output_images.append([output_path_PNG, output_path_SVG])
+
+                # Agregar las detecciones con el flag a la salida
+                output_images.append([output_path_PNG, output_path_SVG, text_detections])
 
     print("OCR text detection completado.")
     return output_images
+
 
 
 # Template matching
@@ -327,13 +335,16 @@ def calculate_iou(box1, box2):
 def TemplateMatching(processed_images, output_path, library_path, template_threshold, iou_threshold):
     if not processed_images:
         print("No hay imágenes procesadas para analizar.")
-        return
+        return []
 
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
     # Colores únicos para las clases
     class_colors = {}
+
+    # Lista de resultados para devolver
+    output_images = []
 
     # Iterar sobre las imágenes procesadas
     for image_pair in processed_images:
@@ -397,28 +408,25 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                         if not overlaps:
                             detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
 
-        # Dibujar las detecciones iniciales
-        for x, y, w, h, rotation, class_name in detections:
-            if class_name not in class_colors:
-                class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
-
-            color = tuple(int(c) for c in class_colors[class_name].strip("rgb()").split(","))
-            rotation_display = rotation if rotation in [90, 180, 270] else 0
-            cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
-            cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
-
-        output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
-        cv2.imwrite(output_template_png_path, input_image)
-        print(f"Imagen inicial guardada con las detecciones de la librería: {output_template_png_path}")
-
         # Guardar las detecciones iniciales
         all_detections = detections.copy()
 
         while True:
-            roi = cv2.selectROI("Selecciona la plantilla", input_image, showCrosshair=True)
+            # Mostrar todas las bounding boxes acumuladas con clases y rotaciones en una copia temporal
+            temp_image = input_image.copy()
+            for x, y, w, h, rotation, class_name in all_detections:
+                if class_name not in class_colors:
+                    class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
+
+                color = tuple(int(c) for c in class_colors[class_name].strip("rgb()").split(","))
+                rotation_display = rotation if rotation in [90, 180, 270] else 0
+                cv2.rectangle(temp_image, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(temp_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+
+            # Selección de ROI
+            roi = cv2.selectROI("Selecciona la plantilla", temp_image, showCrosshair=True)
             cv2.destroyWindow("Selecciona la plantilla")
 
-            # Verificar si el usuario presionó ESC o seleccionó una región inválida
             if roi[2] == 0 or roi[3] == 0:
                 print("Selección terminada o región inválida.")
                 break
@@ -444,88 +452,34 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             if not os.path.exists(templates_folder):
                 os.makedirs(templates_folder)
 
-            # Guardar el template original y sus variaciones
-            iteration = 0
-            height, width = template.shape[:2]
+            # Guardar el template original
+            cv2.imwrite(os.path.join(templates_folder, "template.png"), template)
 
-            # Aumentar dimensiones iterativamente
-            while width < 2 * template.shape[1] and height < 2 * template.shape[0]:
-                if iteration % 2 == 0:
-                    width += 2
-                else:
-                    height += 2
+            # Agregar detección basada en la ROI seleccionada
+            new_detection = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]), 0, class_name)
+            all_detections.append(new_detection)
 
-                resized_template = cv2.resize(template, (width, height))
-                cv2.imwrite(os.path.join(templates_folder, f"template_increase_{iteration}.png"), resized_template)
-                iteration += 1
+        # Pintar bounding boxes finales con el color predominante
+        most_color = get_dominant_color(png_path)
+        most_color = tuple(map(int, most_color[::-1]))  # Convertir a formato BGR
+        for x, y, w, h, rotation, class_name in all_detections:
+            cv2.rectangle(input_image, (x, y), (x + w, y + h), most_color, -1)
 
-            # Reducir dimensiones iterativamente
-            width, height = template.shape[1], template.shape[0]
-            iteration = 0
+        # Guardar el resultado final
+        output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
+        cv2.imwrite(output_template_png_path, input_image)
+        print(f"Imagen actualizada con las nuevas detecciones encontradas: {output_template_png_path}")
 
-            while width > template.shape[1] // 2 and height > template.shape[0] // 2:
-                if iteration % 2 == 0:
-                    width -= 2
-                else:
-                    height -= 2
+        # Llamar a insert_detected_svgs para insertar los elementos SVG detectados
+        insert_detected_svgs(all_detections, library_path, processed_images, output_path)
 
-                resized_template = cv2.resize(template, (max(width, 1), max(height, 1)))
-                cv2.imwrite(os.path.join(templates_folder, f"template_decrease_{iteration}.png"), resized_template)
-                iteration += 1
+        # Agregar el flag justo antes de retornar el valor
+        flagged_detections = [det + ("elemento",) for det in all_detections]
 
-            print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
+        # Agregar a la lista de resultados
+        output_images.append([output_template_png_path, svg_path, flagged_detections])
 
-            # Aplicar template matching para la clase seleccionada
-            new_detections = []
-            for template_file in os.listdir(templates_folder):
-                template_path = os.path.join(templates_folder, template_file)
-                template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
-
-                if template is None:
-                    continue
-
-                for rotation_angle in [0, 90, 180, 270]:
-                    rotated_template = template
-                    if rotation_angle != 0:
-                        rotated_template = cv2.rotate(template, {
-                            90: cv2.ROTATE_90_CLOCKWISE,
-                            180: cv2.ROTATE_180,
-                            270: cv2.ROTATE_90_COUNTERCLOCKWISE
-                        }[rotation_angle])
-
-                    result = cv2.matchTemplate(gray_image, rotated_template, cv2.TM_CCOEFF_NORMED)
-                    locations = np.where(result >= template_threshold)
-
-                    for point in zip(*locations[::-1]):
-                        top_left = point
-                        bbox = (top_left[0], top_left[1], rotated_template.shape[1], rotated_template.shape[0])
-
-                        overlaps = False
-                        for existing_bbox in all_detections:
-                            if calculate_iou(bbox, existing_bbox[:4]) > iou_threshold:
-                                overlaps = True
-                                break
-
-                        if not overlaps:
-                            new_detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
-
-            all_detections.extend(new_detections)
-
-            for x, y, w, h, rotation, class_name in new_detections:
-                if class_name not in class_colors:
-                    class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
-
-                color = tuple(int(c) for c in class_colors[class_name].strip("rgb()").split(","))
-                rotation_display = rotation if rotation in [90, 180, 270] else 0
-                cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
-                cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
-
-            cv2.imwrite(output_template_png_path, input_image)
-            print(f"Imagen actualizada con las nuevas detecciones encontradas: {output_template_png_path}")
-
-    insert_detected_svgs(all_detections, library_path, processed_images, output_path)
-
-
+    return output_images
 
 def limpiar_namespaces(element):
     """Remueve los namespaces de los elementos XML."""
