@@ -299,10 +299,21 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
 
 
 # Template matching
-def calculate_iou(box1, box2):
+def calculate_iou(box1, box2, image, predominant_color):
     """
     Calcula el IoU (Intersection over Union) entre dos bounding boxes.
-    Las bounding boxes se representan como (x, y, ancho, alto).
+    Si las bounding boxes se superponen, prioriza aquella con MENOS píxeles
+    del color predominante en la intersección.
+    
+    Args:
+        box1: Tuple (x, y, ancho, alto) de la primera bounding box.
+        box2: Tuple (x, y, ancho, alto) de la segunda bounding box.
+        image: Imagen (array numpy) para analizar los píxeles.
+        predominant_color: Tuple (B, G, R) con el color predominante.
+
+    Returns:
+        iou: El IoU entre las dos cajas. Si se prioriza una caja,
+        se retorna el índice de la caja con más píxeles del color predominante.
     """
     x1, y1, w1, h1 = box1
     x2, y2, w2, h2 = box2
@@ -318,7 +329,35 @@ def calculate_iou(box1, box2):
     inter_height = max(0, yi2 - yi1)
     inter_area = inter_width * inter_height
 
-    # Áreas de las cajas
+    if inter_area == 0:
+        # No hay superposición
+        return 0
+
+    # Extraer la región de intersección de la imagen
+    intersection_region = image[yi1:yi2, xi1:xi2]
+
+    # Calcular la cantidad de píxeles del color predominante en la región
+    predominant_color_bgr = np.array(predominant_color, dtype=np.uint8)  # Asegurar formato
+    mask = np.all(intersection_region == predominant_color_bgr, axis=-1)
+    predominant_pixels_count = np.sum(mask)
+
+    # Comparar el número de píxeles del color predominante en cada caja completa
+    region1 = image[y1:y1 + h1, x1:x1 + w1]
+    region2 = image[y2:y2 + h2, x2:x2 + w2]
+
+    mask1 = np.all(region1 == predominant_color_bgr, axis=-1)
+    mask2 = np.all(region2 == predominant_color_bgr, axis=-1)
+
+    count1 = np.sum(mask1)
+    count2 = np.sum(mask2)
+
+    # Si las cajas tienen superposición, eliminar la que tenga más píxeles predominantes
+    if count1 > count2:
+        return 1  # Priorizar la eliminación de box1
+    elif count2 > count1:
+        return 2  # Priorizar la eliminación de box2
+
+    # Si tienen igual cantidad de píxeles predominantes, calcular IoU como fallback
     area1 = w1 * h1
     area2 = w2 * h2
 
@@ -331,6 +370,7 @@ def calculate_iou(box1, box2):
 
     # IoU
     return inter_area / union_area
+
 
 def TemplateMatching(processed_images, output_path, library_path, template_threshold, iou_threshold):
     if not processed_images:
@@ -348,11 +388,11 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
     # Iterar sobre las imágenes procesadas
     for image_pair in processed_images:
-        if not isinstance(image_pair, list) or len(image_pair) < 2:
+        if not isinstance(image_pair, list) or len(image_pair) < 3:
             print(f"Advertencia: Estructura incorrecta en processed_images: {image_pair}.")
             continue
 
-        png_path, svg_path = image_pair
+        png_path, svg_path, res = image_pair
 
         if not os.path.exists(png_path):
             print(f"Advertencia: La imagen PNG {png_path} no existe.")
@@ -364,6 +404,10 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             continue
 
         gray_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2GRAY)
+
+        # Obtener el color predominante
+        most_color = get_dominant_color(png_path)
+        most_color = tuple(map(int, most_color[::-1]))  # Convertir a formato BGR
 
         # Realizar detecciones iniciales
         detections = []
@@ -401,7 +445,16 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
                         overlaps = False
                         for existing_bbox in detections:
-                            if calculate_iou(bbox, existing_bbox[:4]) > iou_threshold:
+                            iou_or_priority = calculate_iou(bbox, existing_bbox[:4], input_image, most_color)
+
+                            if isinstance(iou_or_priority, int):
+                                if iou_or_priority == 1:
+                                    overlaps = True
+                                    break
+                                elif iou_or_priority == 2:
+                                    detections.remove(existing_bbox)
+                                    break
+                            elif iou_or_priority > iou_threshold:
                                 overlaps = True
                                 break
 
@@ -457,11 +510,27 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
             # Agregar detección basada en la ROI seleccionada
             new_detection = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]), 0, class_name)
-            all_detections.append(new_detection)
+
+            # Verificar solapamientos antes de añadir la nueva detección
+            overlaps = False
+            for existing_bbox in all_detections:
+                iou_or_priority = calculate_iou(new_detection[:4], existing_bbox[:4], input_image, most_color)
+
+                if isinstance(iou_or_priority, int):
+                    if iou_or_priority == 1:
+                        overlaps = True
+                        break
+                    elif iou_or_priority == 2:
+                        all_detections.remove(existing_bbox)
+                        break
+                elif iou_or_priority > iou_threshold:
+                    overlaps = True
+                    break
+
+            if not overlaps:
+                all_detections.append(new_detection)
 
         # Pintar bounding boxes finales con el color predominante
-        most_color = get_dominant_color(png_path)
-        most_color = tuple(map(int, most_color[::-1]))  # Convertir a formato BGR
         for x, y, w, h, rotation, class_name in all_detections:
             cv2.rectangle(input_image, (x, y), (x + w, y + h), most_color, -1)
 
@@ -480,6 +549,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
         output_images.append([output_template_png_path, svg_path, flagged_detections])
 
     return output_images
+
 
 def limpiar_namespaces(element):
     """Remueve los namespaces de los elementos XML."""
@@ -513,7 +583,7 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    for png_path, svg_path in processed_images:
+    for png_path, svg_path, res2 in processed_images:
         if not os.path.exists(svg_path):
             print(f"El archivo SVG base '{svg_path}' no existe. Se omitirá.")
             continue
