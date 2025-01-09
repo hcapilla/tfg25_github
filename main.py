@@ -34,7 +34,7 @@ def ReSin_config():
     # TEMPLATE MATCHING
     parser.add_argument('--template_library', type=str, default='library/', help='Template folder')
     parser.add_argument('--template_output', type=str, default='output_template/', help='Output Post-TemplateMatching folder')
-    parser.add_argument('--template_confidence_threshold', type=float, default='0.8', help='OCR Confidence threshold')
+    parser.add_argument('--template_confidence_threshold', type=float, default='0.6', help='OCR Confidence threshold')
     parser.add_argument('--iou_confidence_threshold', type=float, default='0.5', help='OCR Confidence threshold')
 
 
@@ -255,6 +255,20 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                     text_y = (text_line.bbox[1] + text_line.bbox[3]) / 2
                     font_height = (text_line.bbox[3] - text_line.bbox[1]) * 0.9
 
+                    # Ajustar el tamaño del texto basado en el rango del font_height
+                    # Si el font height es menor a 10, será 15.
+                    # Si el font height es entre 10-20 será 15.
+                    # Si el font height es entre 20-30 será 25.
+                    # Si el font height es entre 30-40 será 35.
+                    if 0 <= font_height <= 20:
+                        font_size = 15
+                    elif 20 < font_height <= 30:
+                        font_size = 25
+                    elif 30 < font_height <= 40:
+                        font_size = 35
+                    else:
+                        font_size = int(font_height)  # Usar el tamaño original si es mayor a 40
+
                     # TEST_drawSVGBoundingBoxes(text_line, output_svg)  # DEBUG
 
                     output_svg.add(output_svg.text(
@@ -262,7 +276,7 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                         insert=(text_x, text_y),
                         text_anchor="middle",
                         alignment_baseline="middle",
-                        font_size=font_height,
+                        font_size=font_size,  # Usar el tamaño ajustado
                         font_weight="bold",
                         font_family="Tahoma"
                     ))
@@ -274,6 +288,7 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
 
     print("OCR text detection completado.")
     return output_images
+
 
 # Template matching
 def calculate_iou(box1, box2):
@@ -360,7 +375,6 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                 for rotation_angle in [0, 90, 180, 270]:
                     rotated_template = template
                     if rotation_angle != 0:
-                        # Rotar el template en ángulos de 90°, 180°, y 270°
                         rotated_template = cv2.rotate(template, {
                             90: cv2.ROTATE_90_CLOCKWISE,
                             180: cv2.ROTATE_180,
@@ -383,6 +397,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                         if not overlaps:
                             detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
 
+        # Dibujar las detecciones iniciales
         for x, y, w, h, rotation, class_name in detections:
             if class_name not in class_colors:
                 class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
@@ -393,10 +408,11 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
         output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
-        output_template_svg_path = os.path.join(output_path, os.path.basename(svg_path))
-
         cv2.imwrite(output_template_png_path, input_image)
         print(f"Imagen inicial guardada con las detecciones de la librería: {output_template_png_path}")
+
+        # Guardar las detecciones iniciales
+        all_detections = detections.copy()
 
         while True:
             roi = cv2.selectROI("Selecciona la plantilla", input_image, showCrosshair=True)
@@ -428,7 +444,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             if not os.path.exists(templates_folder):
                 os.makedirs(templates_folder)
 
-            # Guardar el template original y variaciones
+            # Guardar el template original y sus variaciones
             iteration = 0
             height, width = template.shape[:2]
 
@@ -460,7 +476,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
 
             # Aplicar template matching para la clase seleccionada
-            detections = []
+            new_detections = []
             for template_file in os.listdir(templates_folder):
                 template_path = os.path.join(templates_folder, template_file)
                 template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
@@ -485,15 +501,17 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                         bbox = (top_left[0], top_left[1], rotated_template.shape[1], rotated_template.shape[0])
 
                         overlaps = False
-                        for existing_bbox in detections:
+                        for existing_bbox in all_detections:
                             if calculate_iou(bbox, existing_bbox[:4]) > iou_threshold:
                                 overlaps = True
                                 break
 
                         if not overlaps:
-                            detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
+                            new_detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
 
-            for x, y, w, h, rotation, class_name in detections:
+            all_detections.extend(new_detections)
+
+            for x, y, w, h, rotation, class_name in new_detections:
                 if class_name not in class_colors:
                     class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
 
@@ -502,14 +520,12 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                 cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
                 cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
-            #output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
             cv2.imwrite(output_template_png_path, input_image)
             print(f"Imagen actualizada con las nuevas detecciones encontradas: {output_template_png_path}")
 
-    insert_detected_svgs(detections, library_path, processed_images, output_path)
-    # Guardar el SVG final
-    #final_svg.save()
-    #print("SVG final generado con éxito.")
+    insert_detected_svgs(all_detections, library_path, processed_images, output_path)
+
+
 
 def limpiar_namespaces(element):
     """Remueve los namespaces de los elementos XML."""
@@ -559,11 +575,25 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
             print(f"Error al cargar el archivo SVG base '{svg_path}': {e}")
             continue
 
+        # Lista para almacenar las bounding boxes de los elementos ya insertados
+        inserted_bboxes = []
+
         # Procesar cada detección
         for x, y, w, h, rotation, class_name in detections:
             svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg")
             if not os.path.exists(svg_class_path):
                 print(f"SVG para la clase '{class_name}' no encontrado en {svg_class_path}.")
+                continue
+
+            # Verificar si esta bounding box ya contiene un elemento insertado
+            overlapping = False
+            for bx, by, bw, bh in inserted_bboxes:
+                if not (x + w < bx or bx + bw < x or y + h < by or by + bh < y):  # Comprueba intersección
+                    overlapping = True
+                    break
+
+            if overlapping:
+                print(f"Bounding box ({x}, {y}, {w}, {h}) se solapa con un elemento existente. Se omite.")
                 continue
 
             try:
@@ -578,15 +608,14 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
                 svg_width = parse_dimension(class_root.attrib.get("width", "100px"))
                 svg_height = parse_dimension(class_root.attrib.get("height", "100px"))
 
-                # Calcular escala basada en el tamaño de la detección
-                scale_x = w / svg_width
-                scale_y = h / svg_height
+                # Calcular escalas manteniendo la relación de aspecto
+                scale = min(w / svg_width, h / svg_height)
 
                 # Crear un grupo (<g>) con las transformaciones necesarias
-                transform = f"translate({x},{y}) scale({scale_x},{scale_y})"
+                cx, cy = x + (w / 2), y + (h / 2)
+                transform = f"translate({cx},{cy}) scale({scale}) translate(-{svg_width / 2},-{svg_height / 2})"
                 if rotation != 0:
-                    cx, cy = x + (w / 2), y + (h / 2)
-                    transform += f" rotate({rotation},{cx},{cy})"
+                    transform += f" rotate({rotation})"
 
                 grupo = ET.Element('g', attrib={'transform': transform})
 
@@ -596,6 +625,9 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
 
                 # Insertar el grupo en el archivo SVG base
                 root.append(grupo)
+
+                # Registrar la bounding box como insertada
+                inserted_bboxes.append((x, y, w, h))
 
             except Exception as e:
                 print(f"Error al procesar el SVG de la clase '{class_name}': {e}")
