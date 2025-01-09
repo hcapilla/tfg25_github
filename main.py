@@ -5,7 +5,7 @@ from collections import Counter
 import random
 
 # SVG 
-import svgwrite as svg
+import svgwrite as svg 
 from xml.etree import ElementTree as ET
 
 # OCR
@@ -34,6 +34,8 @@ def ReSin_config():
     # TEMPLATE MATCHING
     parser.add_argument('--template_library', type=str, default='library/', help='Template folder')
     parser.add_argument('--template_output', type=str, default='output_template/', help='Output Post-TemplateMatching folder')
+    parser.add_argument('--template_confidence_threshold', type=float, default='0.8', help='OCR Confidence threshold')
+    parser.add_argument('--iou_confidence_threshold', type=float, default='0.5', help='OCR Confidence threshold')
 
 
     arguments = parser.parse_args()
@@ -47,12 +49,14 @@ def ReSin_config():
 
     s_template_library = arguments.template_library
     s_template_output_path = arguments.template_output
+    s_template_confidence_threshold = arguments.template_confidence_threshold
+    s_iou_confidence_threshold = arguments.iou_confidence_threshold
 
     s_input_path, s_ocr_output_path, s_template_library, s_template_output_path = CreatePaths(
         s_workspace_path, s_input_path, s_ocr_output_path, s_template_library, s_template_output_path
     )
 
-    return s_input_path, s_workspace_path, s_ocr_output_path, s_ocr_language, s_ocr_confidence_threshold, s_template_library, s_template_output_path
+    return s_input_path, s_workspace_path, s_ocr_output_path, s_ocr_language, s_ocr_confidence_threshold, s_template_library, s_template_output_path, s_template_confidence_threshold, s_iou_confidence_threshold
 
 def TEST_showConfidence(detection):
     text_lines = detection[0].text_lines
@@ -87,7 +91,44 @@ def TEST_drawSVGBoundingBoxes(text_line, output_svg):
         stroke=boundingBox_color,
         stroke_width=2
     ))
+
+def get_dominant_color(image_path):
+    """
+    Calcula el color predominante de una imagen.
+    Si el color predominante es negro, retorna el segundo color más frecuente.
+
+    Args:
+        image_path (str): Ruta de la imagen.
+
+    Returns:
+        tuple: Color predominante en formato (R, G, B).
+    """
+    # Leer la imagen
+    image = cv2.imread(image_path)
     
+    if image is None:
+        raise ValueError("No se pudo leer la imagen. Verifica la ruta.")
+
+    # Convertir la imagen a formato RGB
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Aplanar la matriz para obtener los colores en formato (R, G, B)
+    pixels = image.reshape(-1, 3)
+
+    # Contar la frecuencia de cada color
+    pixel_counts = Counter(map(tuple, pixels))
+
+    # Ordenar por frecuencia de mayor a menor
+    sorted_colors = pixel_counts.most_common()
+
+    # Buscar el color predominante que no sea negro
+    for color, _ in sorted_colors:
+        if color != (0, 0, 0):  # Ignorar el negro
+            return color
+
+    # Si todos los colores son negros, retornar negro
+    return (0, 0, 0)
+
 def CreatePaths(workspace, input_path, ocr_output_path, template_library, template_output_path):
     # Añadir el workspace como prefijo a los paths
     input_path = os.path.join(workspace, input_path)
@@ -152,51 +193,11 @@ def createOutputName(output_dir, base_name):
     while os.path.exists(os.path.join(output_dir, f"{base_name}({counter}).svg")) or os.path.exists(os.path.join(output_dir, f"{base_name}({counter}).png")):
         counter += 1
 
-    output_path_svg = os.path.join(output_dir, f"{base_name}({counter}).svg")
-    output_path_png = os.path.join(output_dir, f"{base_name}({counter}).png")
+    output_path_svg = os.path.join(output_dir, f"{base_name}_{counter}.svg")
+    output_path_png = os.path.join(output_dir, f"{base_name}_{counter}.png")
     
     return output_path_svg, output_path_png
 
-def embed_svg(output_svg, svg_file, x, y, width, height, rotation):
-    def parse_dimension(value):
-        """Convierte dimensiones como '5.3646in' o '120px' a un número flotante."""
-        if "in" in value:
-            return float(value.replace("in", "")) * 96  # 1in = 96px
-        elif "cm" in value:
-            return float(value.replace("cm", "")) * 37.7952755906  # 1cm = 37.79px
-        elif "mm" in value:
-            return float(value.replace("mm", "")) * 3.77952755906  # 1mm = 3.779px
-        elif "px" in value:
-            return float(value.replace("px", ""))
-        else:
-            return float(value)  # Asume que es un valor numérico puro
-
-    # Leer y procesar el archivo SVG
-    tree = ET.parse(svg_file)
-    root = tree.getroot()
-
-    # Extraer y convertir las dimensiones
-    svg_width = parse_dimension(root.attrib.get("width", "100px"))
-    svg_height = parse_dimension(root.attrib.get("height", "100px"))
-
-    # Calcular escala
-    scale_x = width / svg_width
-    scale_y = height / svg_height
-    transform = f"translate({x},{y}) scale({scale_x},{scale_y})"
-    if rotation != 0:
-        cx, cy = x + width / 2, y + height / 2  # Centro para rotar
-        transform += f" rotate({rotation},{cx},{cy})"
-
-    # Cargar el contenido SVG externo como texto
-    with open(svg_file, "r") as f:
-        svg_content = f.read()
-
-    # Crear un grupo y añadir el contenido
-    group = output_svg.g(transform=transform)
-    group.add(output_svg.text(svg_content, insert=(0, 0)))
-    output_svg.add(group)
-
-# OCR
 def text_detection(input_path, output_path, language, ocr_confidence_threshold):
     output_images = []
 
@@ -206,6 +207,9 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
 
             with Image.open(image_path) as image:
                 output_path_SVG, output_path_PNG = createOutputName(output_path, os.path.splitext(input_image)[0])
+                
+                # Obtener el color predominante
+                most_color = get_dominant_color(image_path)
 
                 # OCR
                 det_processor, det_model = load_det_processor(), load_det_model()
@@ -217,7 +221,21 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                 # Output SVG and image attributes
                 image_width = image._size[0]
                 image_height = image._size[1]
-                output_svg = svg.Drawing(output_path_SVG, size=(image_width, image_height))
+
+                # Crear el SVG sin namespaces adicionales
+                output_svg = svg.Drawing(output_path_SVG, size=(image_width, image_height), profile='full')
+                output_svg['xmlns'] = 'http://www.w3.org/2000/svg'  # Namespace básico, sin prefijos
+
+                # Convertir el color predominante (most_color) a formato hexadecimal para SVG
+                most_color_hex = '#{:02x}{:02x}{:02x}'.format(*most_color)
+
+                # Añadir un rectángulo que cubra todo el fondo del SVG con el color predominante
+                output_svg.add(output_svg.rect(
+                    insert=(0, 0),  # Posición inicial
+                    size=(image_width, image_height),  # Tamaño del rectángulo (cubre todo el SVG)
+                    fill=most_color_hex  # Color de fondo
+                ))
+
                 draw = ImageDraw.Draw(image)
 
                 for text_line in detection[0].text_lines:
@@ -225,16 +243,10 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                     x_min, y_min = int(text_line.bbox[0]), int(text_line.bbox[1])
                     x_max, y_max = int(text_line.bbox[2]), int(text_line.bbox[3])
 
-                    # Calcular el color más común en el área de la Bounding Box
-                    cropped_area = image.crop((x_min, y_min, x_max, y_max))
-                    colors = cropped_area.getcolors(cropped_area.size[0] * cropped_area.size[1])
-                    if colors:
-                        most_common_color = max(colors, key=lambda x: x[0])[1]
-
-                        # Sustituir el contenido de la Bounding Box por el color predominante
-                        for x in range(x_min, x_max):
-                            for y in range(y_min, y_max):
-                                image.putpixel((x, y), most_common_color)
+                    # Sustituir el contenido de la Bounding Box por el color predominante
+                    for x in range(x_min, x_max):
+                        for y in range(y_min, y_max):
+                            image.putpixel((x, y), most_color)
 
                     # TEST_drawOriginalPNGBoundingBoxes(image, text_line, draw)  # DEBUG
 
@@ -243,15 +255,17 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                     text_y = (text_line.bbox[1] + text_line.bbox[3]) / 2
                     font_height = (text_line.bbox[3] - text_line.bbox[1]) * 0.9
 
-                    # TEST_drawSVGBoundingBoxes(text_line, output_svg)
+                    # TEST_drawSVGBoundingBoxes(text_line, output_svg)  # DEBUG
 
-                    output_svg.add(output_svg.text(text_line.text,
-                                                   insert=(text_x, text_y),
-                                                   text_anchor="middle",
-                                                   alignment_baseline="middle",
-                                                   font_size=font_height,
-                                                   font_weight="bold",
-                                                   font_family="Tahoma"))
+                    output_svg.add(output_svg.text(
+                        text_line.text,
+                        insert=(text_x, text_y),
+                        text_anchor="middle",
+                        alignment_baseline="middle",
+                        font_size=font_height,
+                        font_weight="bold",
+                        font_family="Tahoma"
+                    ))
 
                 # Guardar la imagen procesada con las Bounding Boxes sustituidas
                 image.save(output_path_PNG)
@@ -295,16 +309,13 @@ def calculate_iou(box1, box2):
     # IoU
     return inter_area / union_area
 
-def TemplateMatching(processed_images, output_path, library_path, final_svg_path, iou_threshold=0.5, template_threshold=0.55):
+def TemplateMatching(processed_images, output_path, library_path, template_threshold, iou_threshold):
     if not processed_images:
         print("No hay imágenes procesadas para analizar.")
         return
 
     if not os.path.exists(output_path):
         os.makedirs(output_path)
-
-    # Crear el SVG final
-    final_svg = svg.Drawing(final_svg_path)
 
     # Colores únicos para las clases
     class_colors = {}
@@ -381,9 +392,11 @@ def TemplateMatching(processed_images, output_path, library_path, final_svg_path
             cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
             cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
-        output_image_path = os.path.join(output_path, os.path.basename(png_path))
-        cv2.imwrite(output_image_path, input_image)
-        print(f"Imagen inicial guardada con bounding boxes: {output_image_path}")
+        output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
+        output_template_svg_path = os.path.join(output_path, os.path.basename(svg_path))
+
+        cv2.imwrite(output_template_png_path, input_image)
+        print(f"Imagen inicial guardada con las detecciones de la librería: {output_template_png_path}")
 
         while True:
             roi = cv2.selectROI("Selecciona la plantilla", input_image, showCrosshair=True)
@@ -489,25 +502,129 @@ def TemplateMatching(processed_images, output_path, library_path, final_svg_path
                 cv2.rectangle(input_image, (x, y), (x + w, y + h), color, 1)
                 cv2.putText(input_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
-            output_image_path = os.path.join(output_path, os.path.basename(png_path))
-            cv2.imwrite(output_image_path, input_image)
-            print(f"Imagen actualizada guardada con bounding boxes: {output_image_path}")
+            #output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
+            cv2.imwrite(output_template_png_path, input_image)
+            print(f"Imagen actualizada con las nuevas detecciones encontradas: {output_template_png_path}")
 
+    insert_detected_svgs(detections, library_path, processed_images, output_path)
     # Guardar el SVG final
-    final_svg.save()
-    print("SVG final generado con éxito.")
+    #final_svg.save()
+    #print("SVG final generado con éxito.")
+
+def limpiar_namespaces(element):
+    """Remueve los namespaces de los elementos XML."""
+    for elem in element.iter():
+        if '}' in elem.tag:
+            elem.tag = elem.tag.split('}', 1)[1]  # Elimina el namespace
+
+def parse_dimension(value):
+    """Convierte dimensiones como '5.3646in', '120px', etc., a un número flotante en píxeles."""
+    if "in" in value:
+        return float(value.replace("in", "")) * 96  # 1 in = 96 px
+    elif "cm" in value:
+        return float(value.replace("cm", "")) * 37.7952755906  # 1 cm = 37.79 px
+    elif "mm" in value:
+        return float(value.replace("mm", "")) * 3.77952755906  # 1 mm = 3.779 px
+    elif "px" in value:
+        return float(value.replace("px", ""))
+    else:
+        return float(value)  # Asume un valor numérico puro si no hay unidad
+
+def insert_detected_svgs(detections, library_path, processed_images, output_directory):
+    """
+    Inserta elementos SVG detectados en los archivos SVG correspondientes.
+
+    Args:
+        processed_images (list): Lista con pares de rutas [(png_path, svg_path), ...].
+        detections (list): Lista de detecciones en formato [(x, y, w, h, rotation, class_name), ...].
+        library_path (str): Ruta donde están los SVG de las clases detectadas (en library/general).
+        output_directory (str): Directorio para guardar los archivos SVG actualizados.
+    """
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    for png_path, svg_path in processed_images:
+        if not os.path.exists(svg_path):
+            print(f"El archivo SVG base '{svg_path}' no existe. Se omitirá.")
+            continue
+
+        # Cargar el archivo SVG base
+        try:
+            tree = ET.parse(svg_path)
+            root = tree.getroot()
+
+            # Limpiar namespaces del archivo base
+            limpiar_namespaces(root)
+        except Exception as e:
+            print(f"Error al cargar el archivo SVG base '{svg_path}': {e}")
+            continue
+
+        # Procesar cada detección
+        for x, y, w, h, rotation, class_name in detections:
+            svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg")
+            if not os.path.exists(svg_class_path):
+                print(f"SVG para la clase '{class_name}' no encontrado en {svg_class_path}.")
+                continue
+
+            try:
+                # Cargar el SVG de la clase detectada
+                class_tree = ET.parse(svg_class_path)
+                class_root = class_tree.getroot()
+
+                # Limpiar namespaces del SVG de la clase
+                limpiar_namespaces(class_root)
+
+                # Obtener dimensiones del SVG de la clase
+                svg_width = parse_dimension(class_root.attrib.get("width", "100px"))
+                svg_height = parse_dimension(class_root.attrib.get("height", "100px"))
+
+                # Calcular escala basada en el tamaño de la detección
+                scale_x = w / svg_width
+                scale_y = h / svg_height
+
+                # Crear un grupo (<g>) con las transformaciones necesarias
+                transform = f"translate({x},{y}) scale({scale_x},{scale_y})"
+                if rotation != 0:
+                    cx, cy = x + (w / 2), y + (h / 2)
+                    transform += f" rotate({rotation},{cx},{cy})"
+
+                grupo = ET.Element('g', attrib={'transform': transform})
+
+                # Agregar los elementos del SVG de la clase al grupo
+                for elem in list(class_root):
+                    grupo.append(elem)
+
+                # Insertar el grupo en el archivo SVG base
+                root.append(grupo)
+
+            except Exception as e:
+                print(f"Error al procesar el SVG de la clase '{class_name}': {e}")
+                continue
+
+        # Generar la ruta de salida
+        svg_filename = os.path.basename(svg_path)
+        output_svg_path = os.path.join(output_directory, svg_filename)
+
+        # Guardar el archivo SVG actualizado
+        try:
+            tree.write(output_svg_path, encoding="utf-8", xml_declaration=True)
+            print(f"Archivo SVG actualizado guardado en: {output_svg_path}")
+        except Exception as e:
+            print(f"Error al guardar el archivo SVG en '{output_svg_path}': {e}")
+
+
+
 
 
 def main():
     # OCR arguments
-    input_path, workspace, ocr_output_path, ocr_language, ocr_confidence_threshold, template_library, template_output_path = ReSin_config()
+    input_path, workspace, ocr_output_path, ocr_language, ocr_confidence_threshold, template_library, template_output_path, template_confidence_threshold, iou_confidence_threshold = ReSin_config()
 
     # OCR
     processed_images = text_detection(input_path, ocr_output_path, ocr_language, ocr_confidence_threshold)
 
     # Template matching
-    final_svg_path = os.path.join(template_output_path, "final_diagram.svg")
-    TemplateMatching(processed_images, template_output_path, template_library, final_svg_path)
+    TemplateMatching(processed_images, template_output_path, template_library, template_confidence_threshold, iou_confidence_threshold)
 
     print('Done')
 
