@@ -539,8 +539,50 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
             print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
 
-            # Agregar detección basada en la ROI seleccionada
-            all_detections.append((int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]), 0, class_name))
+            # Realizar template matching para la nueva clase y añadir detecciones
+            print(f"Ejecutando template matching para la nueva clase '{class_name}'...")
+            for template_file in os.listdir(templates_folder):
+                template_path = os.path.join(templates_folder, template_file)
+                template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+
+                if template is None:
+                    continue
+
+                for rotation_angle in [0, 90, 180, 270]:
+                    rotated_template = template
+                    if rotation_angle != 0:
+                        rotated_template = cv2.rotate(template, {
+                            90: cv2.ROTATE_90_CLOCKWISE,
+                            180: cv2.ROTATE_180,
+                            270: cv2.ROTATE_90_COUNTERCLOCKWISE
+                        }[rotation_angle])
+
+                    result = cv2.matchTemplate(gray_image, rotated_template, cv2.TM_CCOEFF_NORMED)
+                    locations = np.where(result >= template_threshold)
+
+                    for point in zip(*locations[::-1]):
+                        top_left = point
+                        bbox = (top_left[0], top_left[1], rotated_template.shape[1], rotated_template.shape[0])
+
+                        overlaps = False
+                        for existing_bbox in all_detections:
+                            iou_or_priority = calculate_iou(bbox, existing_bbox[:4], input_image, most_color)
+
+                            if isinstance(iou_or_priority, int):
+                                if iou_or_priority == 1:
+                                    overlaps = True
+                                    break
+                                elif iou_or_priority == 2:
+                                    all_detections.remove(existing_bbox)
+                                    break
+                            elif iou_or_priority > iou_threshold:
+                                overlaps = True
+                                break
+
+                        if not overlaps:
+                            all_detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
+
+            print(f"Detecciones añadidas para la clase '{class_name}'.")
 
         # Pintar bounding boxes finales con el color predominante
         for x, y, w, h, rotation, class_name in all_detections:
@@ -561,6 +603,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
         output_images.append([output_template_png_path, svg_path, flagged_detections])
 
     return output_images
+
 
 
 
