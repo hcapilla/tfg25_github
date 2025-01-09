@@ -496,7 +496,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                 print("Clase no válida. Intente nuevamente.")
                 continue
 
-            # Crear carpeta para la clase si no existe en la librería
+            # Crear carpeta para la clase si no existe
             class_folder = os.path.join(library_path, class_name)
             if not os.path.exists(class_folder):
                 os.makedirs(class_folder)
@@ -508,27 +508,39 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             # Guardar el template original
             cv2.imwrite(os.path.join(templates_folder, "template.png"), template)
 
+            # Generar variaciones escaladas
+            iteration = 0
+            height, width = template.shape[:2]
+
+            # Aumentar dimensiones iterativamente
+            while width < 2 * template.shape[1] and height < 2 * template.shape[0]:
+                if iteration % 2 == 0:
+                    width += 2
+                else:
+                    height += 2
+
+                resized_template = cv2.resize(template, (width, height))
+                cv2.imwrite(os.path.join(templates_folder, f"template_increase_{iteration}.png"), resized_template)
+                iteration += 1
+
+            # Reducir dimensiones iterativamente
+            width, height = template.shape[1], template.shape[0]
+            iteration = 0
+
+            while width > template.shape[1] // 2 and height > template.shape[0] // 2:
+                if iteration % 2 == 0:
+                    width -= 2
+                else:
+                    height -= 2
+
+                resized_template = cv2.resize(template, (max(width, 1), max(height, 1)))
+                cv2.imwrite(os.path.join(templates_folder, f"template_decrease_{iteration}.png"), resized_template)
+                iteration += 1
+
+            print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
+
             # Agregar detección basada en la ROI seleccionada
-            new_detection = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]), 0, class_name)
-
-            # Verificar solapamientos antes de añadir la nueva detección
-            overlaps = False
-            for existing_bbox in all_detections:
-                iou_or_priority = calculate_iou(new_detection[:4], existing_bbox[:4], input_image, most_color)
-
-                if isinstance(iou_or_priority, int):
-                    if iou_or_priority == 1:
-                        overlaps = True
-                        break
-                    elif iou_or_priority == 2:
-                        all_detections.remove(existing_bbox)
-                        break
-                elif iou_or_priority > iou_threshold:
-                    overlaps = True
-                    break
-
-            if not overlaps:
-                all_detections.append(new_detection)
+            all_detections.append((int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]), 0, class_name))
 
         # Pintar bounding boxes finales con el color predominante
         for x, y, w, h, rotation, class_name in all_detections:
@@ -549,6 +561,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
         output_images.append([output_template_png_path, svg_path, flagged_detections])
 
     return output_images
+
 
 
 def limpiar_namespaces(element):
