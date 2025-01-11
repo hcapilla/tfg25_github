@@ -604,9 +604,6 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
     return output_images
 
-
-
-
 def limpiar_namespaces(element):
     """Remueve los namespaces de los elementos XML."""
     for elem in element.iter():
