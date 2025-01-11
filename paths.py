@@ -45,6 +45,7 @@ def find_connections(image_path, detections, dominant_color):
     grid, classes = precompute_grid(detections, image.shape)
 
     conexiones = []
+    explored_connections = set()  # Conjunto para evitar duplicados
     terminal_count = 0
 
     def is_different_from_background(pixel):
@@ -57,6 +58,19 @@ def find_connections(image_path, detections, dominant_color):
         ]
         return [(nx, ny) for nx, ny in neighbors if 0 <= nx < image.shape[1] and 0 <= ny < image.shape[0]]
 
+    def check_terminal_neighbors(cx, cy, visited, current_id):
+        """Explora los 5 píxeles alrededor de un terminal para buscar un ID en el grid que no sea el propio."""
+        for dx in range(-5, 6):
+            for dy in range(-5, 6):
+                nx, ny = cx + dx, cy + dy
+                if (nx, ny) in visited or not (0 <= nx < image.shape[1] and 0 <= ny < image.shape[0]):
+                    continue
+                element_id = grid[ny, nx]
+                if element_id is not None and element_id != current_id:
+                    element_class = classes[ny, nx]
+                    return element_class, element_id
+        return None, None
+
     def flood_fill(x, y, visited, path):
         stack = [(x, y)]
         while stack:
@@ -66,12 +80,19 @@ def find_connections(image_path, detections, dominant_color):
             visited.add((cx, cy))
             path.append((cx, cy))
             inside_detection = grid[cy, cx]
-            if not inside_detection:
-                gray_image[cy, cx] = [255, 165, 0]
-            else:
-                return inside_detection, classes[cy, cx]
+            if inside_detection:
+                return inside_detection, classes[cy, cx]  # Conexión detectada
             stack.extend(get_neighbors(cx, cy))
-        return None, None
+
+        # Al terminar el flood-fill sin encontrar una conexión, verificar vecinos
+        if path:
+            terminal_coords = [path[-1][0], path[-1][1]]
+            terminal_label, terminal_id = check_terminal_neighbors(terminal_coords[0], terminal_coords[1], visited, None)
+            if terminal_label and terminal_id:
+                return terminal_id, terminal_label  # Conexión encontrada en vecinos
+
+        return None, None  # Es un terminal definitivo
+
 
     visited = set()
     for x, y, w, h, _, label, id in detections:
@@ -97,12 +118,23 @@ def find_connections(image_path, detections, dominant_color):
             result_id, result_label = flood_fill(start_x, start_y, visited, path)
 
             if result_id:  # Es una conexión
-                conexiones.append([label, id, result_label, result_id, path])
+                connection_pair = (id, result_id)
+                if connection_pair not in explored_connections:
+                    explored_connections.add(connection_pair)
+                    conexiones.append([label, id, result_label, result_id, path])
             else:  # Es un terminal
                 if path:
-                    terminal_count += 1
                     terminal_coords = [path[-1][0], path[-1][1]]
-                    conexiones.append([label, id, terminal_coords, f"terminal_{terminal_count}", path])
+                    terminal_label, terminal_id = check_terminal_neighbors(terminal_coords[0], terminal_coords[1], visited, id)
+                    if terminal_label and terminal_id:
+                        connection_pair = (id, terminal_id)
+                        if connection_pair not in explored_connections:
+                            explored_connections.add(connection_pair)
+                            conexiones.append([label, id, terminal_label, terminal_id, path])
+                    else:
+                            terminal_count += 1
+                            conexiones.append([label, id, terminal_coords, f"terminal_{terminal_count}", path])
+
 
     return conexiones, gray_image
 
@@ -114,7 +146,12 @@ dominant_color = get_dominant_color(image_path)
 result, highlighted_image = find_connections(image_path, detections, dominant_color)
 
 for conn in result:
-    if isinstance(conn[2], list):  # Si es un terminal
+    # Resaltar el camino
+    for px, py in conn[4]:
+        highlighted_image[py, px] = [0, 165, 255]  # Color naranja chillón
+
+    # Resaltar terminales
+    if isinstance(conn[2], list):  # Terminales
         cv2.circle(highlighted_image, tuple(conn[2]), 5, (0, 255, 0), -1)
 
 cv2.imshow("Conexiones resaltadas", cv2.cvtColor(highlighted_image, cv2.COLOR_RGB2BGR))

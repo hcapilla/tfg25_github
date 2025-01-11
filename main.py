@@ -728,11 +728,6 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
             print(f"Error al guardar el archivo SVG en '{output_svg_path}': {e}")
 
 
-
-
-
-
-
 def main():
     # OCR arguments
     input_path, workspace, ocr_output_path, ocr_language, ocr_confidence_threshold, template_library, template_output_path, template_confidence_threshold, iou_confidence_threshold = ReSin_config()
