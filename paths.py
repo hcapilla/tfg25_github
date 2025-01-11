@@ -135,7 +135,7 @@ def find_connections(image_path, detections, dominant_color):
         result = flood_fill(start_x, start_y, visited, path)
 
         if result:
-            conexiones.append((f"{label}_{id}", result[5]))  # Conexión encontrada
+            conexiones.append(({label},{id}, result[5]))  # Conexión encontrada
         else:
             terminal_count += 1
             conexiones.append(({label},{id}, "terminal", {terminal_count}))  # Terminal encontrada
