@@ -386,6 +386,9 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
     # Lista de resultados para devolver
     output_images = []
 
+    # Contador global de IDs únicos
+    element_id = 1
+
     # Iterar sobre las imágenes procesadas
     for image_pair in processed_images:
         if not isinstance(image_pair, list) or len(image_pair) < 3:
@@ -459,7 +462,8 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                                 break
 
                         if not overlaps:
-                            detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
+                            detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name, element_id))
+                            element_id += 1  # Incrementar el ID único
 
         # Guardar las detecciones iniciales
         all_detections = detections.copy()
@@ -467,14 +471,14 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
         while True:
             # Mostrar todas las bounding boxes acumuladas con clases y rotaciones en una copia temporal
             temp_image = input_image.copy()
-            for x, y, w, h, rotation, class_name in all_detections:
+            for x, y, w, h, rotation, class_name, det_id in all_detections:
                 if class_name not in class_colors:
                     class_colors[class_name] = f"rgb({random.randint(0, 255)}, {random.randint(0, 255)}, {random.randint(0, 255)})"
 
                 color = tuple(int(c) for c in class_colors[class_name].strip("rgb()").split(","))
                 rotation_display = rotation if rotation in [90, 180, 270] else 0
                 cv2.rectangle(temp_image, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(temp_image, f"{class_name} ({rotation_display})", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+                cv2.putText(temp_image, f"{class_name} ({rotation_display}) ID: {det_id}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
             # Selección de ROI
             roi = cv2.selectROI("Selecciona la plantilla", temp_image, showCrosshair=True)
@@ -512,29 +516,22 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             iteration = 0
             height, width = template.shape[:2]
 
-            # Aumentar dimensiones iterativamente
+            # Aumentar y reducir dimensiones iterativamente
             while width < 2 * template.shape[1] and height < 2 * template.shape[0]:
-                if iteration % 2 == 0:
-                    width += 2
-                else:
-                    height += 2
-
                 resized_template = cv2.resize(template, (width, height))
                 cv2.imwrite(os.path.join(templates_folder, f"template_increase_{iteration}.png"), resized_template)
+                width += 2
+                height += 2
                 iteration += 1
 
-            # Reducir dimensiones iterativamente
             width, height = template.shape[1], template.shape[0]
             iteration = 0
 
             while width > template.shape[1] // 2 and height > template.shape[0] // 2:
-                if iteration % 2 == 0:
-                    width -= 2
-                else:
-                    height -= 2
-
                 resized_template = cv2.resize(template, (max(width, 1), max(height, 1)))
                 cv2.imwrite(os.path.join(templates_folder, f"template_decrease_{iteration}.png"), resized_template)
+                width -= 2
+                height -= 2
                 iteration += 1
 
             print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
@@ -580,12 +577,13 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                                 break
 
                         if not overlaps:
-                            all_detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name))
+                            all_detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name, element_id))
+                            element_id += 1  # Incrementar el ID único
 
             print(f"Detecciones añadidas para la clase '{class_name}'.")
 
         # Pintar bounding boxes finales con el color predominante
-        for x, y, w, h, rotation, class_name in all_detections:
+        for x, y, w, h, rotation, class_name, det_id in all_detections:
             cv2.rectangle(input_image, (x, y), (x + w, y + h), most_color, -1)
 
         # Guardar el resultado final
@@ -596,13 +594,11 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
         # Llamar a insert_detected_svgs para insertar los elementos SVG detectados
         insert_detected_svgs(all_detections, library_path, processed_images, output_path)
 
-        # Agregar el flag justo antes de retornar el valor
-        flagged_detections = [det + ("elemento",) for det in all_detections]
-
         # Agregar a la lista de resultados
-        output_images.append([output_template_png_path, svg_path, flagged_detections])
+        output_images.append([output_template_png_path, svg_path, all_detections])
 
     return output_images
+
 
 def limpiar_namespaces(element):
     """Remueve los namespaces de los elementos XML."""
@@ -628,7 +624,7 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
     Inserta elementos SVG detectados en los archivos SVG correspondientes.
 
     Args:
-        detections (list): Lista de detecciones en formato [(x, y, w, h, rotation, class_name), ...].
+        detections (list): Lista de detecciones en formato [(x, y, w, h, rotation, class_name, element_id), ...].
         library_path (str): Ruta donde están los SVG de las clases detectadas.
         processed_images (list): Lista con pares de rutas [(png_path, svg_path, res), ...].
         output_directory (str): Directorio para guardar los archivos SVG actualizados.
@@ -663,7 +659,7 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
         inserted_bboxes = []
 
         # Procesar cada detección
-        for x, y, w, h, rotation, class_name in detections:
+        for x, y, w, h, rotation, class_name, element_id in detections:
             svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg")
             if not os.path.exists(svg_class_path):
                 print(f"SVG para la clase '{class_name}' no encontrado en {svg_class_path}.")
@@ -695,13 +691,16 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
                 # Calcular escalas manteniendo la relación de aspecto y aplicando el factor de reducción
                 scale = min(w / svg_width, h / svg_height) * scale_factor
 
-                # Crear un grupo (<g>) con las transformaciones necesarias
+                # Crear un grupo (<g>) con las transformaciones necesarias e incluir el ID
                 cx, cy = x + (w / 2), y + (h / 2)
                 transform = f"translate({cx},{cy}) scale({scale}) translate(-{svg_width / 2},-{svg_height / 2})"
                 if rotation != 0:
                     transform += f" rotate({rotation})"
 
-                grupo = ET.Element('g', attrib={'transform': transform})
+                grupo = ET.Element('g', attrib={
+                    'transform': transform,
+                    'id': f"{class_name}_{element_id}"  # Asignar el ID único
+                })
 
                 # Agregar los elementos del SVG de la clase al grupo
                 for elem in list(class_root):
@@ -714,7 +713,7 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
                 inserted_bboxes.append((x, y, w, h))
 
             except Exception as e:
-                print(f"Error al procesar el SVG de la clase '{class_name}': {e}")
+                print(f"Error al procesar el SVG de la clase '{class_name}' (ID: {element_id}): {e}")
                 continue
 
         # Generar la ruta de salida
@@ -727,6 +726,7 @@ def insert_detected_svgs(detections, library_path, processed_images, output_dire
             print(f"Archivo SVG actualizado guardado en: {output_svg_path}")
         except Exception as e:
             print(f"Error al guardar el archivo SVG en '{output_svg_path}': {e}")
+
 
 
 

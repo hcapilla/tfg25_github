@@ -74,6 +74,13 @@ def find_connections(image_path, detections, dominant_color):
         """Verifica si un pixel es diferente al color de fondo."""
         return not np.array_equal(pixel, dominant_color)
 
+    def is_inside_detection(cx, cy):
+        """Verifica si un píxel está dentro de alguna bounding box."""
+        for dx, dy, dw, dh, _, _, _ in detections:
+            if dx <= cx <= dx + dw and dy <= cy <= dy + dh:
+                return True
+        return False
+
     def get_neighbors(x, y):
         """Obtiene los vecinos de un píxel."""
         neighbors = [
@@ -93,12 +100,19 @@ def find_connections(image_path, detections, dominant_color):
             visited.add((cx, cy))
             path.append((cx, cy))
 
-            # Marcar píxel en naranja brillante
-            gray_image[cy, cx] = [255, 165, 0]
+            # Depurar: Verificar si el píxel está dentro de una bounding box
+            inside_detection = is_inside_detection(cx, cy)
+            #print(f"Pixel: ({cx}, {cy}), Inside detection: {inside_detection}")
+
+            # Marcar píxel en naranja brillante si no está dentro de una bounding box
+            if not inside_detection:
+                gray_image[cy, cx] = [255, 165, 0]
+            else:  # Opcional: marcar píxeles dentro de detecciones en azul
+                gray_image[cy, cx] = [0, 0, 255]
 
             # Verificar cada 10 pasos si se conecta con otra detección
             steps_since_last_check += 1
-            if steps_since_last_check == 1000000:
+            if steps_since_last_check == 100000000000000000000001000000000000000000000010000000000000000000000100000000000000000000001000000000000000000000010000000000000000000000:
                 steps_since_last_check = 0
                 for det in detections:
                     dx, dy, dw, dh, _, _, _ = det
@@ -111,7 +125,7 @@ def find_connections(image_path, detections, dominant_color):
     # Procesar cada detección
     visited = set()
     for idx, det in enumerate(detections):
-        x, y, w, h, _, label, _ = det
+        x, y, w, h, _, label, id = det
         start_x, start_y = x + w // 2, y + h // 2
 
         if (start_x, start_y) in visited:
@@ -121,16 +135,16 @@ def find_connections(image_path, detections, dominant_color):
         result = flood_fill(start_x, start_y, visited, path)
 
         if result:
-            conexiones.append((label, result[5]))  # Conexión encontrada
+            conexiones.append((f"{label}_{id}", result[5]))  # Conexión encontrada
         else:
             terminal_count += 1
-            conexiones.append((label, f"terminal {terminal_count}"))  # Terminal encontrada
+            conexiones.append(({label},{id}, "terminal", {terminal_count}))  # Terminal encontrada
 
     return conexiones, gray_image
 
 # Ejemplo de uso
 image_path = "factory1/output_ocr/Sinoptico2_147.png"
-detections = [(1291, 496, 60, 61, 0, '3way_valve', 'elemento'), (1532, 511, 129, 49, 90, 'column', 'elemento'), (923, 776, 45, 125, 0, 'column', 'elemento'), (1763, 956, 115, 35, 90, 'column', 'elemento'), (1223, 649, 61, 141, 0, 'column', 'elemento'), (1392, 111, 43, 41, 0, 'fan', 'elemento'), (312, 688, 43, 41, 0, 'fan', 'elemento'), (1015, 341, 124, 36, 180, 'flexible_duct', 'elemento'), (931, 503, 124, 36, 180, 'flexible_duct', 'elemento'), (1011, 416, 59, 58, 0, 'hopper', 'elemento'), (419, 261, 91, 86, 0, 'hopper', 'elemento'), (755, 258, 95, 90, 0, 'hopper', 'elemento'), (486, 685, 437, 205, 0, 'mixer', 'elemento'), (1349, 746, 91, 73, 0, 'pump', 'elemento'), (1338, 826, 91, 73, 0, 'pump', 'elemento'), (165, 247, 22, 77, 270, 'unk', 'elemento'), (614, 247, 22, 77, 270, 'unk', 'elemento'), (1209, 97, 67, 10, 0, 'unk', 'elemento'), (521, 191, 67, 10, 0, 'unk', 'elemento'), (857, 191, 67, 10, 0, 'unk', 'elemento'), (1616, 187, 73, 18, 0, 'unk', 'elemento'), (1076, 308, 73, 18, 0, 'unk', 'elemento'), (415, 416, 73, 18, 0, 'unk', 'elemento'), (752, 416, 73, 18, 0, 'unk', 'elemento'), (247, 496, 73, 18, 0, 'unk', 'elemento'), (415, 496, 73, 18, 0, 'unk', 'elemento'), (752, 496, 73, 18, 0, 'unk', 'elemento'), (908, 577, 73, 18, 0, 'unk', 'elemento'), (49, 767, 73, 18, 180, 'unk', 'elemento'), (208, 160, 34, 41, 0, 'valve', 'elemento'), (306, 160, 34, 41, 0, 'valve', 'elemento'), (651, 160, 34, 41, 0, 'valve', 'elemento'), (1500, 416, 34, 41, 0, 'valve', 'elemento'), (1542, 416, 34, 41, 0, 'valve', 'elemento'), (1584, 416, 34, 41, 0, 'valve', 'elemento'), (1626, 416, 34, 41, 0, 'valve', 'elemento'), (1668, 416, 34, 41, 0, 'valve', 'elemento'), (1738, 416, 34, 41, 0, 'valve', 'elemento'), (1780, 416, 34, 41, 0, 'valve', 'elemento'), (1822, 416, 34, 41, 0, 'valve', 'elemento'), (1865, 416, 34, 41, 0, 'valve', 'elemento'), (1233, 596, 34, 41, 0, 'valve', 'elemento'), (1584, 698, 34, 41, 0, 'valve', 'elemento'), (1801, 698, 34, 41, 0, 'valve', 'elemento'), (1422, 117, 152, 146, 0, 'washing_machine', 'elemento'), (160, 695, 152, 146, 0, 'washing_machine', 'elemento')]
+detections = [(1291, 496, 60, 61, 0, '3way_valve', 4), (1532, 511, 129, 49, 90, 'column', 9), (923, 776, 45, 125, 0, 'column', 43), (1763, 956, 115, 35, 90, 'column', 45), (1223, 649, 61, 141, 0, 'column', 50), (1392, 111, 43, 41, 0, 'fan', 100), (312, 688, 43, 41, 0, 'fan', 101), (1015, 341, 124, 36, 180, 'flexible_duct', 104), (931, 503, 124, 36, 180, 'flexible_duct', 105), (1011, 416, 59, 58, 0, 'hopper', 110), (419, 261, 91, 86, 0, 'hopper', 111), (755, 258, 95, 90, 0, 'hopper', 112), (486, 685, 437, 205, 0, 'mixer', 148), (1349, 746, 91, 73, 0, 'pump', 153), (1338, 826, 91, 73, 0, 'pump', 157), (165, 247, 22, 77, 270, 'unk', 176), (614, 247, 22, 77, 270, 'unk', 177), (1209, 97, 67, 10, 0, 'unk', 187), (521, 191, 67, 10, 0, 'unk', 188), (857, 191, 67, 10, 0, 'unk', 189), (1616, 187, 73, 18, 0, 'unk', 214), (1076, 308, 73, 18, 0, 'unk', 216), (415, 416, 73, 18, 0, 'unk', 219), (752, 416, 73, 18, 0, 'unk', 222), (247, 496, 73, 18, 0, 'unk', 225), (415, 496, 73, 18, 0, 'unk', 228), (752, 496, 73, 18, 0, 'unk', 231), (908, 577, 73, 18, 0, 'unk', 233), (49, 767, 73, 18, 180, 'unk', 234), (208, 160, 34, 41, 0, 'valve', 235), (306, 160, 34, 41, 0, 'valve', 236), (651, 160, 34, 41, 0, 'valve', 237), (1500, 416, 34, 41, 0, 'valve', 238), (1542, 416, 34, 41, 0, 'valve', 239), (1584, 416, 34, 41, 0, 'valve', 240), (1626, 416, 34, 41, 0, 'valve', 241), (1668, 416, 34, 41, 0, 'valve', 242), (1738, 416, 34, 41, 0, 'valve', 243), (1780, 416, 34, 41, 0, 'valve', 244), (1822, 416, 34, 41, 0, 'valve', 245), (1865, 416, 34, 41, 0, 'valve', 246), (1233, 596, 34, 41, 0, 'valve', 247), (1584, 698, 34, 41, 0, 'valve', 248), (1801, 698, 34, 41, 0, 'valve', 249), (1422, 117, 152, 146, 0, 'washing_machine', 250), (160, 695, 152, 146, 0, 'washing_machine', 255)]
 
 dominant_color = get_dominant_color(image_path)
 result, highlighted_image = find_connections(image_path, detections, dominant_color)
