@@ -92,6 +92,20 @@ def TEST_drawSVGBoundingBoxes(text_line, output_svg):
         stroke_width=2
     ))
 
+def CreatePaths(workspace, input_path, ocr_output_path, template_library, template_output_path):
+    # Añadir el workspace como prefijo a los paths
+    input_path = os.path.join(workspace, input_path)
+    ocr_output_path = os.path.join(workspace, ocr_output_path)
+    template_library = os.path.join(workspace, template_library)
+    template_output_path = os.path.join(workspace, template_output_path)
+
+    # Crear los directorios si no existen
+    for path in [input_path, ocr_output_path, template_library, template_output_path]:
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+    return input_path, ocr_output_path, template_library, template_output_path
+
 def get_dominant_color(image_path):
     """
     Calcula el color predominante de una imagen.
@@ -128,20 +142,6 @@ def get_dominant_color(image_path):
 
     # Si todos los colores son negros, retornar negro
     return (0, 0, 0)
-
-def CreatePaths(workspace, input_path, ocr_output_path, template_library, template_output_path):
-    # Añadir el workspace como prefijo a los paths
-    input_path = os.path.join(workspace, input_path)
-    ocr_output_path = os.path.join(workspace, ocr_output_path)
-    template_library = os.path.join(workspace, template_library)
-    template_output_path = os.path.join(workspace, template_output_path)
-
-    # Crear los directorios si no existen
-    for path in [input_path, ocr_output_path, template_library, template_output_path]:
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-    return input_path, ocr_output_path, template_library, template_output_path
 
 def deleteByThreshold(detection, ocr_confidence_threshold):
     def is_valid_line(line):
