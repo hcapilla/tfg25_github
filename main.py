@@ -20,6 +20,26 @@ import cv2
 import numpy as np
 
 def ReSin_config():
+    """
+    Configures the ReSin application by parsing arguments, initializing workspace paths,
+    and returning the required settings.
+
+    Returns:
+        tuple: Paths and configurations for the application.
+    """
+    def initializeWorkspacePaths(workspace, input_path, ocr_output_path, template_library, template_output_path, connections_output_path):
+        input_path = os.path.join(workspace, input_path)
+        ocr_output_path = os.path.join(workspace, ocr_output_path)
+        template_library = os.path.join(workspace, template_library)
+        template_output_path = os.path.join(workspace, template_output_path)
+        connections_output_path = os.path.join(workspace, connections_output_path)
+
+        for path in [input_path, ocr_output_path, template_library, template_output_path]:
+            if not os.path.exists(path):
+                os.makedirs(path)
+
+        return input_path, ocr_output_path, template_library, template_output_path, connections_output_path
+
     parser = argparse.ArgumentParser(description="ReSin configuration")
 
     # GLOBAL.
@@ -37,6 +57,8 @@ def ReSin_config():
     parser.add_argument('--template_confidence_threshold', type=float, default='0.55', help='OCR Confidence threshold')
     parser.add_argument('--iou_confidence_threshold', type=float, default='0.5', help='OCR Confidence threshold')
 
+    # PATH CREATION
+    parser.add_argument('--connections_output', type=str, default='output/', help='Output Post-Connections folder - Finished process')
 
     arguments = parser.parse_args()
 
@@ -52,153 +74,182 @@ def ReSin_config():
     s_template_confidence_threshold = arguments.template_confidence_threshold
     s_iou_confidence_threshold = arguments.iou_confidence_threshold
 
-    s_input_path, s_ocr_output_path, s_template_library, s_template_output_path = CreatePaths(
-        s_workspace_path, s_input_path, s_ocr_output_path, s_template_library, s_template_output_path
+    s_connections_output_path = arguments.connections_output
+
+    s_input_path, s_ocr_output_path, s_template_library, s_template_output_path, s_connections_output_path = initializeWorkspacePaths(
+        s_workspace_path, s_input_path, s_ocr_output_path, s_template_library, s_template_output_path, s_connections_output_path
     )
 
-    return s_input_path, s_workspace_path, s_ocr_output_path, s_ocr_language, s_ocr_confidence_threshold, s_template_library, s_template_output_path, s_template_confidence_threshold, s_iou_confidence_threshold
+    return s_input_path, s_workspace_path, s_ocr_output_path, s_ocr_language, s_ocr_confidence_threshold, s_template_library, s_template_output_path, s_template_confidence_threshold, s_iou_confidence_threshold, s_connections_output_path
 
-def TEST_showConfidence(detection):
-    text_lines = detection[0].text_lines
-    text_lines_ordenado = sorted(text_lines, key=lambda line: line.confidence)
-
-    for item in text_lines_ordenado:
-        print(f"Text: {item.text}, Confidence: {item.confidence}")
-
-def TEST_drawOriginalPNGBoundingBoxes(image, text_line, draw):
-    x_min, y_min = text_line.bbox[0], text_line.bbox[1]
-    x_max, y_max = text_line.bbox[2], text_line.bbox[3]
-
-    draw.rectangle([x_min, y_min, x_max, y_max], outline="red", width=3)
-
-    cropped_area = image.crop((x_min, y_min, x_max, y_max))
-    colors = cropped_area.getcolors(cropped_area.size[0] * cropped_area.size[1])
-    if colors:
-        most_common_color = max(colors, key=lambda x: x[0])[1]
-        print(f"Color más común: {most_common_color}")
-
-def TEST_drawSVGBoundingBoxes(text_line, output_svg):
-    if text_line.confidence < 0.7:
-        boundingBox_color = "red" 
-    elif text_line.confidence < 0.82: 
-        boundingBox_color = "yellow"
-    else:
-        boundingBox_color = "blue"
-    
-    output_svg.add(output_svg.polygon(
-        points=text_line.polygon,
-        fill="none",
-        stroke=boundingBox_color,
-        stroke_width=2
-    ))
-
-def CreatePaths(workspace, input_path, ocr_output_path, template_library, template_output_path):
-    # Añadir el workspace como prefijo a los paths
-    input_path = os.path.join(workspace, input_path)
-    ocr_output_path = os.path.join(workspace, ocr_output_path)
-    template_library = os.path.join(workspace, template_library)
-    template_output_path = os.path.join(workspace, template_output_path)
-
-    # Crear los directorios si no existen
-    for path in [input_path, ocr_output_path, template_library, template_output_path]:
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-    return input_path, ocr_output_path, template_library, template_output_path
+def print_amber(text):
+    amber_rgb = (255, 191, 0)
+    print(f"\033[38;2;{amber_rgb[0]};{amber_rgb[1]};{amber_rgb[2]}m{text}\033[0m")
 
 def get_dominant_color(image_path):
+        """
+        Calculates the dominant color of an image. If the most frequent color is black, the second most frequent color is returned.
+
+        Args:
+            image_path (str): Path to the image file.
+
+        Returns:
+            tuple: Dominant color in (R, G, B) format.
+        """
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError("Image could not be read. Check the file path.")
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pixels = image.reshape(-1, 3)
+        pixel_counts = Counter(map(tuple, pixels))
+        sorted_colors = pixel_counts.most_common()
+
+        for color, _ in sorted_colors:
+            if color != (0, 0, 0):
+                return color
+
+        return (0, 0, 0)
+
+# OCR
+def text_detection(input_path, output_path, language, ocr_confidence_threshold):
     """
-    Calcula el color predominante de una imagen.
-    Si el color predominante es negro, retorna el segundo color más frecuente.
+    Detects text in images within the input directory, performs OCR, and generates corresponding SVG and PNG outputs.
 
     Args:
-        image_path (str): Ruta de la imagen.
+        input_path (str): Path to the directory containing input images.
+        output_path (str): Path to the directory where the outputs will be saved.
+        language (str): Language for the OCR model.
+        ocr_confidence_threshold (float): Minimum confidence threshold for text detection.
 
     Returns:
-        tuple: Color predominante en formato (R, G, B).
+        list: A list of outputs, each containing the paths to the PNG, SVG, and text detections.
     """
-    # Leer la imagen
-    image = cv2.imread(image_path)
-    
-    if image is None:
-        raise ValueError("No se pudo leer la imagen. Verifica la ruta.")
+    def TEST_showConfidence(detection):
+        """
+        Displays the text lines detected by OCR sorted by their confidence score.
 
-    # Convertir la imagen a formato RGB
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        Args:
+            detection (list): A list of OCR detection results, where each result contains text lines with associated confidence scores.
 
-    # Aplanar la matriz para obtener los colores en formato (R, G, B)
-    pixels = image.reshape(-1, 3)
+        Returns:
+            None: Prints the text and confidence score of each line, sorted by confidence.
+        """
+        text_lines = detection[0].text_lines
+        text_lines_sorted = sorted(text_lines, key=lambda line: line.confidence)
 
-    # Contar la frecuencia de cada color
-    pixel_counts = Counter(map(tuple, pixels))
+        for item in text_lines_sorted:
+            print(f"Text: {item.text}, Confidence: {item.confidence}")
 
-    # Ordenar por frecuencia de mayor a menor
-    sorted_colors = pixel_counts.most_common()
+    def TEST_drawOriginalPNGBoundingBoxes(image, text_line, draw):
+        """
+        Draws bounding boxes on the given image for a specific text line and calculates the most common color in the bounding box area.
 
-    # Buscar el color predominante que no sea negro
-    for color, _ in sorted_colors:
-        if color != (0, 0, 0):  # Ignorar el negro
-            return color
+        Args:
+            image (PIL.Image.Image): The image on which to draw the bounding box.
+            text_line (object): The text line object containing bounding box coordinates.
+            draw (PIL.ImageDraw.Draw): The drawing context for the image.
 
-    # Si todos los colores son negros, retornar negro
-    return (0, 0, 0)
+        Returns:
+            None: Draws a rectangle and prints the most common color in the bounding box area.
+        """
+        x_min, y_min = text_line.bbox[0], text_line.bbox[1]
+        x_max, y_max = text_line.bbox[2], text_line.bbox[3]
 
-def deleteByThreshold(detection, ocr_confidence_threshold):
-    def is_valid_line(line):
-        # Verifica que la línea tenga confianza suficiente
-        if line.confidence < ocr_confidence_threshold:
-            return False
+        draw.rectangle([x_min, y_min, x_max, y_max], outline="red", width=3)
 
-        # Verifica que la línea no tenga solo un carácter
-        if len(line.text) == 1:
-            return False
+        cropped_area = image.crop((x_min, y_min, x_max, y_max))
+        colors = cropped_area.getcolors(cropped_area.size[0] * cropped_area.size[1])
+        if colors:
+            most_common_color = max(colors, key=lambda x: x[0])[1]
+            print(f"Most common color: {most_common_color}")
 
-        # Verifica que la línea no tenga solo dos caracteres
-        if len(line.text) == 2:
-            return False
+    def TEST_drawSVGBoundingBoxes(text_line, output_svg):
+        """
+        Adds a bounding box to the SVG based on the confidence of the text line.
 
-        # Verifica que la línea no esté compuesta completamente por el mismo carácter
-        if len(set(line.text)) == 1:
-            return False
+        Args:
+            text_line (object): The text line object containing polygon and confidence attributes.
+            output_svg (svg.Drawing): The SVG drawing object.
 
-        # Elimina todo lo que haya después de "(" si no contiene ")"
-        if "(" in line.text and ")" not in line.text:
-            line.text = line.text.split("(")[0]
+        Returns:
+            None: Adds a polygon element to the SVG.
+        """
+        if text_line.confidence < 0.7:
+            boundingBox_color = "red" 
+        elif text_line.confidence < 0.82: 
+            boundingBox_color = "yellow"
+        else:
+            boundingBox_color = "blue"
 
-        # Elimina todo lo que haya después de "[" si no contiene "]"
-        if "[" in line.text and "]" not in line.text:
-            line.text = line.text.split("[")[0]
+        output_svg.add(output_svg.polygon(
+            points=text_line.polygon,
+            fill="none",
+            stroke=boundingBox_color,
+            stroke_width=2
+        ))
 
-        return True
+    def deleteByThreshold(detection, ocr_confidence_threshold):
+        """
+        Filters text lines from the OCR detection based on confidence threshold and specific text conditions.
 
-    # Filtra las líneas según las condiciones
-    detection[0].text_lines = [line for line in detection[0].text_lines if is_valid_line(line)]
+        Args:
+            detection (list): OCR detection results containing text lines.
+            ocr_confidence_threshold (float): Minimum confidence threshold for retaining a text line.
 
-    return detection
+        Returns:
+            list: Updated detection results with filtered text lines.
+        """
+        def is_valid_line(line):
+            if line.confidence < ocr_confidence_threshold:
+                return False
+            if len(line.text) == 1:
+                return False
+            if len(line.text) == 2:
+                return False
+            if len(set(line.text)) == 1:
+                return False
+            if "(" in line.text and ")" not in line.text:
+                line.text = line.text.split("(")[0]
+            if "[" in line.text and "]" not in line.text:
+                line.text = line.text.split("[")[0]
+            return True
 
-def createOutputName(output_dir, base_name):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        detection[0].text_lines = [line for line in detection[0].text_lines if is_valid_line(line)]
+        return detection
 
-    output_name_svg = f"{base_name}.svg"
-    output_name_png = f"{base_name}.png"
+    def createOutputName(output_dir, base_name):
+        """
+        Generates unique output file names for SVG and PNG formats in the specified directory.
 
-    output_path_svg = os.path.join(output_dir, output_name_svg)
-    output_path_png = os.path.join(output_dir, output_name_png)
-    
-    if not os.path.exists(output_path_svg) and not os.path.exists(output_path_png):
+        Args:
+            output_dir (str): Directory where the files will be saved.
+            base_name (str): Base name for the output files.
+
+        Returns:
+            tuple: Paths to the SVG and PNG files with unique names.
+        """
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        output_name_svg = f"{base_name}.svg"
+        output_name_png = f"{base_name}.png"
+
+        output_path_svg = os.path.join(output_dir, output_name_svg)
+        output_path_png = os.path.join(output_dir, output_name_png)
+
+        if not os.path.exists(output_path_svg) and not os.path.exists(output_path_png):
+            return output_path_svg, output_path_png
+
+        counter = 1
+        while os.path.exists(os.path.join(output_dir, f"{base_name}_{counter}.svg")) or os.path.exists(os.path.join(output_dir, f"{base_name}_{counter}.png")):
+            counter += 1
+
+        output_path_svg = os.path.join(output_dir, f"{base_name}_{counter}.svg")
+        output_path_png = os.path.join(output_dir, f"{base_name}_{counter}.png")
+
         return output_path_svg, output_path_png
     
-    counter = 1
-    while os.path.exists(os.path.join(output_dir, f"{base_name}({counter}).svg")) or os.path.exists(os.path.join(output_dir, f"{base_name}({counter}).png")):
-        counter += 1
-
-    output_path_svg = os.path.join(output_dir, f"{base_name}_{counter}.svg")
-    output_path_png = os.path.join(output_dir, f"{base_name}_{counter}.png")
-    
-    return output_path_svg, output_path_png
-
-def text_detection(input_path, output_path, language, ocr_confidence_threshold):
     output_images = []
 
     for input_image in os.listdir(input_path):
@@ -207,57 +258,49 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
 
             with Image.open(image_path) as image:
                 output_path_SVG, output_path_PNG = createOutputName(output_path, os.path.splitext(input_image)[0])
-                
-                # Obtener el color predominante
+
                 most_color = get_dominant_color(image_path)
 
-                # OCR
                 det_processor, det_model = load_det_processor(), load_det_model()
                 rec_model, rec_processor = load_rec_model(), load_rec_processor()
 
                 detection = run_ocr([image], [language], det_model, det_processor, rec_model, rec_processor)
                 detection = deleteByThreshold(detection, ocr_confidence_threshold)
 
-                # Output SVG and image attributes
                 image_width = image._size[0]
                 image_height = image._size[1]
 
-                # Crear el SVG sin namespaces adicionales
                 output_svg = svg.Drawing(output_path_SVG, size=(image_width, image_height), profile='full')
-                output_svg['xmlns'] = 'http://www.w3.org/2000/svg'  # Namespace básico, sin prefijos
+                output_svg['xmlns'] = 'http://www.w3.org/2000/svg'
 
-                # Convertir el color predominante (most_color) a formato hexadecimal para SVG
                 most_color_hex = '#{:02x}{:02x}{:02x}'.format(*most_color)
 
-                # Añadir un rectángulo que cubra todo el fondo del SVG con el color predominante
-                output_svg.add(output_svg.rect(
-                    insert=(0, 0),  # Posición inicial
-                    size=(image_width, image_height),  # Tamaño del rectángulo (cubre todo el SVG)
-                    fill=most_color_hex  # Color de fondo
+                background_layer = output_svg.g(id="background-layer")
+                text_layer = output_svg.g(id="text-layer")
+
+                output_svg.add(background_layer)
+                output_svg.add(text_layer)
+
+                background_layer.add(output_svg.rect(
+                    insert=(0, 0),
+                    size=(image_width, image_height),
+                    fill=most_color_hex
                 ))
 
-                draw = ImageDraw.Draw(image)
-
-                text_detections = []  # Lista para almacenar las detecciones de texto
+                text_detections = []
 
                 for text_line in detection[0].text_lines:
-                    # Extraer las coordenadas de la Bounding Box
                     x_min, y_min = int(text_line.bbox[0]), int(text_line.bbox[1])
                     x_max, y_max = int(text_line.bbox[2]), int(text_line.bbox[3])
 
-                    # Sustituir el contenido de la Bounding Box por el color predominante
                     for x in range(x_min, x_max):
                         for y in range(y_min, y_max):
-                            image.putpixel((x, y), most_color)
+                            image.putpixel((x, y), most_color)  # Use RGB tuple
 
-                    # TEST_drawOriginalPNGBoundingBoxes(image, text_line, draw)  # DEBUG
-
-                    # SVG
                     text_x = (text_line.bbox[0] + text_line.bbox[2]) / 2
                     text_y = (text_line.bbox[1] + text_line.bbox[3]) / 2
                     font_height = (text_line.bbox[3] - text_line.bbox[1]) * 0.9
 
-                    # Ajustar el tamaño del texto basado en el rango del font_height
                     if 0 <= font_height <= 20:
                         font_size = 15
                     elif 20 < font_height <= 30:
@@ -265,154 +308,307 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
                     elif 30 < font_height <= 40:
                         font_size = 35
                     else:
-                        font_size = int(font_height)  # Usar el tamaño original si es mayor a 40
+                        font_size = int(font_height)
 
-                    # TEST_drawSVGBoundingBoxes(text_line, output_svg)  # DEBUG
-
-                    output_svg.add(output_svg.text(
+                    text_layer.add(output_svg.text(
                         text_line.text,
                         insert=(text_x, text_y),
                         text_anchor="middle",
                         alignment_baseline="middle",
-                        font_size=font_size,  # Usar el tamaño ajustado
+                        font_size=font_size,
                         font_weight="bold",
                         font_family="Tahoma"
                     ))
 
-                    # Añadir la detección de texto con el flag
                     text_detections.append({
                         "bbox": [x_min, y_min, x_max, y_max],
-                        "text": text_line.text,
-                        "flag": "text"
+                        "text": text_line.text
                     })
 
-                # Guardar la imagen procesada con las Bounding Boxes sustituidas
                 image.save(output_path_PNG)
                 output_svg.save()
 
-                # Agregar las detecciones con el flag a la salida
                 output_images.append([output_path_PNG, output_path_SVG, text_detections])
 
-    print("OCR text detection completado.")
+    print_amber("OCR text detection done!")
     return output_images
 
 
-
 # Template matching
-def calculate_iou(box1, box2, image, predominant_color):
+def template_matching(processed_images, output_path, library_path, template_threshold, iou_threshold):
     """
-    Calcula el IoU (Intersection over Union) entre dos bounding boxes.
-    Si las bounding boxes se superponen, prioriza aquella con MENOS píxeles
-    del color predominante en la intersección.
-    
+    Performs template matching on processed images using a library of templates and handles user interaction
+    for template addition and annotation.
+
     Args:
-        box1: Tuple (x, y, ancho, alto) de la primera bounding box.
-        box2: Tuple (x, y, ancho, alto) de la segunda bounding box.
-        image: Imagen (array numpy) para analizar los píxeles.
-        predominant_color: Tuple (B, G, R) con el color predominante.
+        processed_images (list): List of processed images with paths and detections.
+        output_path (str): Directory where the outputs will be saved.
+        library_path (str): Directory containing template libraries for each class.
+        template_threshold (float): Minimum similarity threshold for template matching.
+        iou_threshold (float): Minimum IoU threshold for filtering overlapping detections.
 
     Returns:
-        iou: El IoU entre las dos cajas. Si se prioriza una caja,
-        se retorna el índice de la caja con más píxeles del color predominante.
+        list: List of outputs, each containing updated paths and detection results.
     """
-    x1, y1, w1, h1 = box1
-    x2, y2, w2, h2 = box2
+    def calculate_iou(box1, box2, image, predominant_color):
+        """
+        Calculates the Intersection over Union (IoU) between two bounding boxes. If the boxes overlap,
+        prioritizes the one with fewer pixels of the predominant color in the intersection region.
 
-    # Coordenadas de la intersección
-    xi1 = max(x1, x2)
-    yi1 = max(y1, y2)
-    xi2 = min(x1 + w1, x2 + w2)
-    yi2 = min(y1 + h1, y2 + h2)
+        Args:
+            box1 (tuple): Tuple (x, y, width, height) of the first bounding box.
+            box2 (tuple): Tuple (x, y, width, height) of the second bounding box.
+            image (numpy.ndarray): Image array for pixel analysis.
+            predominant_color (tuple): Tuple (B, G, R) representing the predominant color.
 
-    # Área de intersección
-    inter_width = max(0, xi2 - xi1)
-    inter_height = max(0, yi2 - yi1)
-    inter_area = inter_width * inter_height
+        Returns:
+            float or int: IoU between the two boxes. If prioritizing a box, returns the index of the box
+            with more pixels of the predominant color.
+        """
+        x1, y1, w1, h1 = box1
+        x2, y2, w2, h2 = box2
 
-    if inter_area == 0:
-        # No hay superposición
-        return 0
+        xi1 = max(x1, x2)
+        yi1 = max(y1, y2)
+        xi2 = min(x1 + w1, x2 + w2)
+        yi2 = min(y1 + h1, y2 + h2)
 
-    # Extraer la región de intersección de la imagen
-    intersection_region = image[yi1:yi2, xi1:xi2]
+        inter_width = max(0, xi2 - xi1)
+        inter_height = max(0, yi2 - yi1)
+        inter_area = inter_width * inter_height
 
-    # Calcular la cantidad de píxeles del color predominante en la región
-    predominant_color_bgr = np.array(predominant_color, dtype=np.uint8)  # Asegurar formato
-    mask = np.all(intersection_region == predominant_color_bgr, axis=-1)
-    predominant_pixels_count = np.sum(mask)
+        if inter_area == 0:
+            return 0
 
-    # Comparar el número de píxeles del color predominante en cada caja completa
-    region1 = image[y1:y1 + h1, x1:x1 + w1]
-    region2 = image[y2:y2 + h2, x2:x2 + w2]
+        intersection_region = image[yi1:yi2, xi1:xi2]
 
-    mask1 = np.all(region1 == predominant_color_bgr, axis=-1)
-    mask2 = np.all(region2 == predominant_color_bgr, axis=-1)
+        predominant_color_bgr = np.array(predominant_color, dtype=np.uint8)
+        mask = np.all(intersection_region == predominant_color_bgr, axis=-1)
+        predominant_pixels_count = np.sum(mask)
 
-    count1 = np.sum(mask1)
-    count2 = np.sum(mask2)
+        region1 = image[y1:y1 + h1, x1:x1 + w1]
+        region2 = image[y2:y2 + h2, x2:x2 + w2]
 
-    # Si las cajas tienen superposición, eliminar la que tenga más píxeles predominantes
-    if count1 > count2:
-        return 1  # Priorizar la eliminación de box1
-    elif count2 > count1:
-        return 2  # Priorizar la eliminación de box2
+        mask1 = np.all(region1 == predominant_color_bgr, axis=-1)
+        mask2 = np.all(region2 == predominant_color_bgr, axis=-1)
 
-    # Si tienen igual cantidad de píxeles predominantes, calcular IoU como fallback
-    area1 = w1 * h1
-    area2 = w2 * h2
+        count1 = np.sum(mask1)
+        count2 = np.sum(mask2)
 
-    # Área de unión
-    union_area = area1 + area2 - inter_area
+        if count1 > count2:
+            return 1
+        elif count2 > count1:
+            return 2
 
-    # Evitar divisiones por cero
-    if union_area == 0:
-        return 0
+        area1 = w1 * h1
+        area2 = w2 * h2
 
-    # IoU
-    return inter_area / union_area
+        union_area = area1 + area2 - inter_area
+
+        if union_area == 0:
+            return 0
+
+        return inter_area / union_area
+
+    def clean_namespaces(element):
+        """
+        Removes namespaces from XML elements.
+
+        Args:
+            element (xml.etree.ElementTree.Element): Root element of the XML tree.
+
+        Returns:
+            None: The function modifies the input element in place.
+        """
+        for elem in element.iter():
+            if '}' in elem.tag:
+                elem.tag = elem.tag.split('}', 1)[1]
+
+    def parse_dimension(value):
+        """
+        Converts dimensions like '5.3646in', '120px', etc., into a float value in pixels.
+
+        Args:
+            value (str): A string representing a dimension with a unit (e.g., '5in', '10cm', '15px').
+
+        Returns:
+            float: The dimension converted into pixels.
+        """
+        if "in" in value:
+            return float(value.replace("in", "")) * 96
+        elif "cm" in value:
+            return float(value.replace("cm", "")) * 37.7952755906
+        elif "mm" in value:
+            return float(value.replace("mm", "")) * 3.77952755906
+        elif "px" in value:
+            return float(value.replace("px", ""))
+        else:
+            return float(value)
+
+    def insert_detected_svgs(detections, library_path, processed_images, output_directory, scale_factor=0.8):
+        """
+        Inserts detected SVG elements into corresponding base SVG files.
+
+        If an SVG file for a detected class is not found, it draws the bounding box instead and prints a
+        single message for missing files.
+        Inserts elements into a separate "element_detections" layer, positioned between the background
+        and text layers.
+
+        Args:
+            detections (list): List of detections in the format [(x, y, w, h, rotation, class_name, element_id), ...].
+            library_path (str): Path to the folder containing SVG files for detected classes.
+            processed_images (list): List of processed images with paths [(png_path, svg_path, res), ...].
+            output_directory (str): Directory to save updated SVG files.
+            scale_factor (float): Scaling factor to reduce the size of elements (default: 0.8).
+
+        Returns:
+            None
+        """
+        if not os.path.exists(output_directory):
+            os.makedirs(output_directory)
+
+        missing_svgs = set()
+
+        for processed_image in processed_images:
+            if len(processed_image) < 2:
+                print(f"Warning: Incorrect structure in processed_images: {processed_image}.")
+                continue
+            
+            png_path, svg_path = processed_image[:2]
+
+            if not os.path.exists(svg_path):
+                print(f"The base SVG file '{svg_path}' does not exist. Skipping.")
+                continue
+            
+            try:
+                tree = ET.parse(svg_path)
+                root = tree.getroot()
+
+                clean_namespaces(root)
+
+                background_layer = root.find(".//*[@id='background-layer']")
+                text_layer = root.find(".//*[@id='text-layer']")
+
+                element_detections_layer = ET.Element('g', attrib={'id': 'element_detections'})
+                if text_layer is not None:
+                    position = list(root).index(text_layer)
+                    root.insert(position, element_detections_layer)
+                elif background_layer is not None:
+                    position = list(root).index(background_layer)
+                    root.insert(position + 1, element_detections_layer)
+                else:
+                    root.append(element_detections_layer)
 
 
-def TemplateMatching(processed_images, output_path, library_path, template_threshold, iou_threshold):
-    if not processed_images:
-        print("No hay imágenes procesadas para analizar.")
-        return []
+            except Exception as e:
+                print(f"Error loading base SVG file '{svg_path}': {e}")
+                continue
+            
+            inserted_bboxes = []
 
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
+            for x, y, w, h, rotation, class_name, element_id in detections:
+                svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg")
 
-    # Colores únicos para las clases
+                if not os.path.exists(svg_class_path):
+                    missing_svgs.add(svg_class_path)
+                    bbox_rect = ET.Element('rect', attrib={
+                        'x': str(x),
+                        'y': str(y),
+                        'width': str(w),
+                        'height': str(h),
+                        'fill': 'none',
+                        'stroke': 'red',
+                        'stroke-width': '2'
+                    })
+                    element_detections_layer.append(bbox_rect)
+                    continue
+                
+                overlapping = any(
+                    not (x + w < bx or bx + bw < x or y + h < by or by + bh < y)
+                    for bx, by, bw, bh in inserted_bboxes
+                )
+
+                if overlapping:
+                    print(f"Bounding box ({x}, {y}, {w}, {h}) overlaps with an existing element. Skipping.")
+                    continue
+                
+                try:
+                    class_tree = ET.parse(svg_class_path)
+                    class_root = class_tree.getroot()
+                    clean_namespaces(class_root)
+
+                    svg_width = parse_dimension(class_root.attrib.get("width", "100px"))
+                    svg_height = parse_dimension(class_root.attrib.get("height", "100px"))
+
+                    scale = min(w / svg_width, h / svg_height) * scale_factor
+
+                    cx, cy = x + (w / 2), y + (h / 2)
+                    transform = f"translate({cx},{cy}) scale({scale}) translate(-{svg_width / 2},-{svg_height / 2})"
+                    if rotation != 0:
+                        transform += f" rotate({rotation})"
+
+                    grupo = ET.Element('g', attrib={
+                        'transform': transform,
+                        'id': f"{class_name}_{element_id}"
+                    })
+
+                    for elem in list(class_root):
+                        grupo.append(elem)
+
+                    element_detections_layer.append(grupo)
+                    inserted_bboxes.append((x, y, w, h))
+
+                except Exception as e:
+                    print(f"Error processing SVG for class '{class_name}' (ID: {element_id}): {e}")
+                    continue
+                
+            svg_filename = os.path.basename(svg_path)
+            output_svg_path = os.path.join(output_directory, svg_filename)
+
+            try:
+                tree.write(output_svg_path, encoding="utf-8", xml_declaration=True)
+                print(f"Updated SVG file saved at: {output_svg_path}")
+            except Exception as e:
+                print(f"Error saving updated SVG file to '{output_svg_path}': {e}")
+
+        if missing_svgs:
+            print("The following SVG files were not found:")
+            for svg in missing_svgs:
+                print(f" - {svg}")
+
+        if not processed_images:
+            print("No processed images available for analysis.")
+            return []
+
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+    
+        return output_svg_path
+
     class_colors = {}
-
-    # Lista de resultados para devolver
     output_images = []
-
-    # Contador global de IDs únicos
     element_id = 1
 
-    # Iterar sobre las imágenes procesadas
     for image_pair in processed_images:
         if not isinstance(image_pair, list) or len(image_pair) < 3:
-            print(f"Advertencia: Estructura incorrecta en processed_images: {image_pair}.")
+            print(f"Warning: Incorrect structure in processed_images: {image_pair}.")
             continue
 
-        png_path, svg_path, res = image_pair
+        png_path, svg_path, texts = image_pair
 
         if not os.path.exists(png_path):
-            print(f"Advertencia: La imagen PNG {png_path} no existe.")
+            print(f"Warning: PNG image {png_path} does not exist.")
             continue
 
         input_image = cv2.imread(png_path)
         if input_image is None:
-            print(f"Advertencia: No se pudo cargar la imagen {png_path}. Se omitirá.")
+            print(f"Warning: Could not load image {png_path}. It will be skipped.")
             continue
 
         gray_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2GRAY)
-
-        # Obtener el color predominante
         most_color = get_dominant_color(png_path)
-        most_color = tuple(map(int, most_color[::-1]))  # Convertir a formato BGR
+        most_color = tuple(map(int, most_color[::-1]))
 
-        # Realizar detecciones iniciales
         detections = []
         for class_name in os.listdir(library_path):
             class_folder = os.path.join(library_path, class_name)
@@ -421,7 +617,7 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             if not os.path.exists(templates_folder):
                 continue
 
-            print(f"Accediendo a la carpeta de templates: {templates_folder}")
+            print(f"Accessing templates folder: {templates_folder}")
 
             for template_file in os.listdir(templates_folder):
                 template_path = os.path.join(templates_folder, template_file)
@@ -463,13 +659,11 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
                         if not overlaps:
                             detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name, element_id))
-                            element_id += 1  # Incrementar el ID único
+                            element_id += 1
 
-        # Guardar las detecciones iniciales
         all_detections = detections.copy()
 
         while True:
-            # Mostrar todas las bounding boxes acumuladas con clases y rotaciones en una copia temporal
             temp_image = input_image.copy()
             for x, y, w, h, rotation, class_name, det_id in all_detections:
                 if class_name not in class_colors:
@@ -480,27 +674,23 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                 cv2.rectangle(temp_image, (x, y), (x + w, y + h), color, 2)
                 cv2.putText(temp_image, f"{class_name} ({rotation_display}) ID: {det_id}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
 
-            # Selección de ROI
-            roi = cv2.selectROI("Selecciona la plantilla", temp_image, showCrosshair=True)
-            cv2.destroyWindow("Selecciona la plantilla")
+            roi = cv2.selectROI("Select the template", temp_image, showCrosshair=True)
+            cv2.destroyWindow("Select the template")
 
             if roi[2] == 0 or roi[3] == 0:
-                print("Selección terminada o región inválida.")
+                print("Selection finished or invalid region.")
                 break
 
-            # Extraer la plantilla seleccionada
             template = gray_image[int(roi[1]):int(roi[1] + roi[3]), int(roi[0]):int(roi[0] + roi[2])]
             if template.size == 0:
-                print("Error: No se seleccionó una plantilla válida. Intente nuevamente.")
+                print("Error: No valid template selected. Please try again.")
                 continue
 
-            # Pedir al usuario la clase del elemento
-            class_name = input("Introduce la clase a la que pertenece el elemento seleccionado: ")
+            class_name = input("Enter the class of the selected element: ")
             if not class_name:
-                print("Clase no válida. Intente nuevamente.")
+                print("Invalid class. Please try again.")
                 continue
 
-            # Crear carpeta para la clase si no existe
             class_folder = os.path.join(library_path, class_name)
             if not os.path.exists(class_folder):
                 os.makedirs(class_folder)
@@ -509,14 +699,11 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
             if not os.path.exists(templates_folder):
                 os.makedirs(templates_folder)
 
-            # Guardar el template original
             cv2.imwrite(os.path.join(templates_folder, "template.png"), template)
 
-            # Generar variaciones escaladas
             iteration = 0
             height, width = template.shape[:2]
 
-            # Aumentar y reducir dimensiones iterativamente
             while width < 2 * template.shape[1] and height < 2 * template.shape[0]:
                 resized_template = cv2.resize(template, (width, height))
                 cv2.imwrite(os.path.join(templates_folder, f"template_increase_{iteration}.png"), resized_template)
@@ -534,10 +721,9 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
                 height -= 2
                 iteration += 1
 
-            print(f"Variaciones de plantilla guardadas en la carpeta 'templates' para la clase '{class_name}'.")
+            print(f"Template variations saved in the 'templates' folder for class '{class_name}'.")
 
-            # Realizar template matching para la nueva clase y añadir detecciones
-            print(f"Ejecutando template matching para la nueva clase '{class_name}'...")
+            print(f"Running template matching for the new class '{class_name}'...")
             for template_file in os.listdir(templates_folder):
                 template_path = os.path.join(templates_folder, template_file)
                 template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
@@ -578,167 +764,289 @@ def TemplateMatching(processed_images, output_path, library_path, template_thres
 
                         if not overlaps:
                             all_detections.append((bbox[0], bbox[1], bbox[2], bbox[3], rotation_angle, class_name, element_id))
-                            element_id += 1  # Incrementar el ID único
+                            element_id += 1
 
-            print(f"Detecciones añadidas para la clase '{class_name}'.")
+            print(f"Detections added for class '{class_name}'.")
 
-        # Pintar bounding boxes finales con el color predominante
         for x, y, w, h, rotation, class_name, det_id in all_detections:
             cv2.rectangle(input_image, (x, y), (x + w, y + h), most_color, -1)
 
-        # Guardar el resultado final
         output_template_png_path = os.path.join(output_path, os.path.basename(png_path))
         cv2.imwrite(output_template_png_path, input_image)
-        print(f"Imagen actualizada con las nuevas detecciones encontradas: {output_template_png_path}")
+        print(f"Image updated with the new detections: {output_template_png_path}")
 
-        # Llamar a insert_detected_svgs para insertar los elementos SVG detectados
-        insert_detected_svgs(all_detections, library_path, processed_images, output_path)
+        output_template_svg_path = insert_detected_svgs(all_detections, library_path, processed_images, output_path)
 
-        # Agregar a la lista de resultados
-        output_images.append([output_template_png_path, svg_path, all_detections])
+        output_images.append([output_template_png_path, output_template_svg_path, all_detections])
+
+        print_amber("Template matching done!")
 
     return output_images
 
 
-def limpiar_namespaces(element):
-    """Remueve los namespaces de los elementos XML."""
-    for elem in element.iter():
-        if '}' in elem.tag:
-            elem.tag = elem.tag.split('}', 1)[1]  # Elimina el namespace
-
-def parse_dimension(value):
-    """Convierte dimensiones como '5.3646in', '120px', etc., a un número flotante en píxeles."""
-    if "in" in value:
-        return float(value.replace("in", "")) * 96  # 1 in = 96 px
-    elif "cm" in value:
-        return float(value.replace("cm", "")) * 37.7952755906  # 1 cm = 37.79 px
-    elif "mm" in value:
-        return float(value.replace("mm", "")) * 3.77952755906  # 1 mm = 3.779 px
-    elif "px" in value:
-        return float(value.replace("px", ""))
-    else:
-        return float(value)  # Asume un valor numérico puro si no hay unidad
-
-def insert_detected_svgs(detections, library_path, processed_images, output_directory, scale_factor=0.8):
+# Connections creation
+def find_connections(processed_images, output_path):
     """
-    Inserta elementos SVG detectados en los archivos SVG correspondientes.
+    Finds connections and terminals in processed images based on bounding box detections.
 
     Args:
-        detections (list): Lista de detecciones en formato [(x, y, w, h, rotation, class_name, element_id), ...].
-        library_path (str): Ruta donde están los SVG de las clases detectadas.
-        processed_images (list): Lista con pares de rutas [(png_path, svg_path, res), ...].
-        output_directory (str): Directorio para guardar los archivos SVG actualizados.
-        scale_factor (float): Factor de escala para reducir el tamaño de los elementos (default: 0.8).
+        processed_images (list): List of processed image data with paths and detections.
+        output_path (str): Directory to save processed connection data or results.
+
+    Returns:
+        list: A list of detected connections for each image.
     """
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
+    def precompute_grid(detections, image_shape):
+        """
+        Crea una cuadrícula que indica qué píxeles están dentro de las bounding boxes.
+        """
+        height, width = image_shape[:2]
+        grid = np.full((height, width), None)  # Inicializar la cuadrícula con None
+        classes = np.full((height, width), None)  # Guardar las clases de los elementos
+        for x, y, w, h, _, label, id in detections:
+            grid[y:y + h, x:x + w] = id
+            classes[y:y + h, x:x + w] = label
+        return grid, classes
+    
+    def check_terminal_neighbors(cx, cy, visited, current_id, grid, classes, image_shape):
+        """
+        Explores the area around a terminal to find a nearby element ID that is different from the current ID.
 
-    for processed_image in processed_images:
-        if len(processed_image) < 2:
-            print(f"Advertencia: Estructura incorrecta en processed_images: {processed_image}.")
+        Args:
+            cx (int): X-coordinate of the terminal.
+            cy (int): Y-coordinate of the terminal.
+            visited (set): Set of already visited coordinates.
+            current_id (int or None): The ID of the current element being checked.
+            grid (numpy.ndarray): A grid representing element IDs at each pixel.
+            classes (numpy.ndarray): A grid representing element classes at each pixel.
+            image_shape (tuple): Shape of the image as (height, width).
+
+        Returns:
+            tuple: A tuple containing the class and ID of a nearby element if found, otherwise (None, None).
+        """
+        for dx in range(-5, 6):
+            for dy in range(-5, 6):
+                nx, ny = cx + dx, cy + dy
+                if (nx, ny) in visited or not (0 <= nx < image_shape[1] and 0 <= ny < image_shape[0]):
+                    continue
+                element_id = grid[ny, nx]
+                if element_id is not None and element_id != current_id:
+                    element_class = classes[ny, nx]
+                    return element_class, element_id
+        return None, None
+
+    def get_neighbors(x, y, image_shape):
+        """
+        Retrieves the neighboring coordinates of a given point within the image bounds.
+
+        Args:
+            x (int): X-coordinate of the point.
+            y (int): Y-coordinate of the point.
+            image_shape (tuple): Shape of the image as (height, width).
+
+        Returns:
+            list: List of valid neighboring coordinates as (nx, ny).
+        """
+        neighbors = [
+            (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1),
+            (x - 1, y - 1), (x + 1, y + 1), (x - 1, y + 1), (x + 1, y - 1)
+        ]
+        return [(nx, ny) for nx, ny in neighbors if 0 <= nx < image_shape[1] and 0 <= ny < image_shape[0]]
+    
+    def is_different_from_background(pixel, dominant_color):
+        """
+        Checks if a given pixel is different from the dominant background color.
+
+        Args:
+            pixel (numpy.ndarray): The pixel value as an array (e.g., [R, G, B]).
+            dominant_color (numpy.ndarray): The dominant background color as an array (e.g., [R, G, B]).
+
+        Returns:
+            bool: True if the pixel is different from the dominant color, False otherwise.
+        """
+        return not np.array_equal(pixel, dominant_color)
+    
+    def flood_fill(x, y, visited, path, image, grid, classes, is_different_from_background, get_neighbors, check_terminal_neighbors, dominant_color):
+        """
+        Performs a flood-fill operation to explore connected regions in an image.
+
+        Args:
+            x (int): Starting X-coordinate.
+            y (int): Starting Y-coordinate.
+            visited (set): Set of already visited coordinates.
+            path (list): List to store the coordinates of the explored path.
+            image (numpy.ndarray): The image being processed.
+            grid (numpy.ndarray): Grid representing element IDs at each pixel.
+            classes (numpy.ndarray): Grid representing element classes at each pixel.
+            is_different_from_background (function): Function to determine if a pixel differs from the background.
+            get_neighbors (function): Function to retrieve valid neighboring coordinates.
+            check_terminal_neighbors (function): Function to check for terminal connections near the current path.
+
+        Returns:
+            tuple: A tuple containing the detected element ID and class if found, otherwise (None, None).
+        """
+        stack = [(x, y)]
+        while stack:
+            cx, cy = stack.pop()
+            if (cx, cy) in visited or not is_different_from_background(image[cy, cx], dominant_color):
+                continue
+            visited.add((cx, cy))
+            path.append((cx, cy))
+            inside_detection = grid[cy, cx]
+            if inside_detection:
+                return inside_detection, classes[cy, cx]
+            stack.extend(get_neighbors(cx, cy, image.shape))
+
+        if path:
+            terminal_coords = [path[-1][0], path[-1][1]]
+            terminal_label, terminal_id = check_terminal_neighbors(
+                terminal_coords[0], terminal_coords[1], visited, None, grid, classes, image.shape
+            )
+            if terminal_label and terminal_id:
+                return terminal_id, terminal_label
+
+        return None, None
+    
+    def add_connections_to_svg(svg_path, output_folder, output_svg_name, connections):
+        """
+        Adds detected connections to an existing SVG file within a new layer.
+
+        The new layer is called "connections" and is placed between the background
+        and element_detections layers.
+
+        Args:
+            svg_path (str): Path to the original SVG file.
+            output_folder (str): Folder to save the modified SVG file.
+            output_svg_name (str): Name of the output SVG file.
+            connections (list): List of connections in the format
+                                [class_origin, id_origin, class_destination, id_destination, path].
+        """
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+            print(f"Folder created: {output_folder}")
+    
+        tree = ET.parse(svg_path)
+        root = tree.getroot()
+    
+        background_layer = root.find(".//*[@id='background-layer']")
+        element_detections_layer = root.find(".//*[@id='element_detections']")
+    
+        connections_layer = ET.Element("g", attrib={"id": "connections", "stroke": "orange", "stroke-width": "2", "fill": "none"})
+    
+        for conn in connections:
+            if len(conn) >= 5 and isinstance(conn[4], list):
+                path_points = conn[4]
+                path_data = "M " + " L ".join(f"{x},{y}" for x, y in path_points)
+                path_element = ET.Element("path", attrib={"d": path_data})
+                connections_layer.append(path_element)
+    
+        if element_detections_layer is not None:
+            position = list(root).index(element_detections_layer)
+            root.insert(position, connections_layer)
+        elif background_layer is not None:
+            position = list(root).index(background_layer)
+            root.insert(position + 1, connections_layer)
+        else:
+            root.append(connections_layer)
+    
+        output_svg_path = os.path.join(output_folder, output_svg_name)
+        tree.write(output_svg_path, encoding="utf-8", xml_declaration=True)
+        print(f"SVG with connections saved at {output_svg_path}")
+        
+    connections_results = []
+
+    for image_pair in processed_images:
+        if len(image_pair) < 3:
+            print(f"Warning: Incorrect structure in processed_images: {image_pair}.")
             continue
 
-        png_path, svg_path = processed_image[:2]  # Solo toma los dos primeros elementos (ignorar el resto)
+        image_path, svg_path, detections = image_pair
 
-        if not os.path.exists(svg_path):
-            print(f"El archivo SVG base '{svg_path}' no existe. Se omitirá.")
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"Error: Image could not be read at {image_path}. Skipping.")
             continue
 
-        # Cargar el archivo SVG base
-        try:
-            tree = ET.parse(svg_path)
-            root = tree.getroot()
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        gray_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        gray_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2RGB)
 
-            # Limpiar namespaces del archivo base
-            limpiar_namespaces(root)
-        except Exception as e:
-            print(f"Error al cargar el archivo SVG base '{svg_path}': {e}")
-            continue
+        dominant_color = np.array(get_dominant_color(image_path))
+        grid, classes = precompute_grid(detections, image.shape)
 
-        # Lista para almacenar las bounding boxes de los elementos ya insertados
-        inserted_bboxes = []
+        conexiones = []
+        explored_connections = set()
+        terminal_count = 0
 
-        # Procesar cada detección
-        for x, y, w, h, rotation, class_name, element_id in detections:
-            svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg")
-            if not os.path.exists(svg_class_path):
-                print(f"SVG para la clase '{class_name}' no encontrado en {svg_class_path}.")
-                continue
+        visited = set()
+        for x, y, w, h, _, label, id in detections:
+            start_pixels = []
+            for i in range(x - 3, x + w + 4):
+                if 0 <= i < image.shape[1]:
+                    if 0 <= y - 3 < image.shape[0]:
+                        start_pixels.append((i, y - 3))
+                    if 0 <= y + h + 3 < image.shape[0]:
+                        start_pixels.append((i, y + h + 3))
+            for j in range(y - 3, y + h + 4):
+                if 0 <= j < image.shape[0]:
+                    if 0 <= x - 3 < image.shape[1]:
+                        start_pixels.append((x - 3, j))
+                    if 0 <= x + w + 3 < image.shape[1]:
+                        start_pixels.append((x + w + 3, j))
 
-            # Verificar si esta bounding box ya contiene un elemento insertado
-            overlapping = False
-            for bx, by, bw, bh in inserted_bboxes:
-                if not (x + w < bx or bx + bw < x or y + h < by or by + bh < y):  # Comprueba intersección
-                    overlapping = True
-                    break
+            for start_x, start_y in start_pixels:
+                if (start_x, start_y) in visited:
+                    continue
 
-            if overlapping:
-                print(f"Bounding box ({x}, {y}, {w}, {h}) se solapa con un elemento existente. Se omite.")
-                continue
+                path = []
+                result_id, result_label = flood_fill(start_x, start_y, visited, path, image, grid, classes, is_different_from_background, get_neighbors, check_terminal_neighbors, dominant_color)
 
-            try:
-                # Cargar el SVG de la clase detectada
-                class_tree = ET.parse(svg_class_path)
-                class_root = class_tree.getroot()
+                if result_id:
+                    connection_pair = (id, result_id)
+                    if connection_pair not in explored_connections:
+                        explored_connections.add(connection_pair)
+                        conexiones.append([label, id, result_label, result_id, path])
+                else:
+                    if path:
+                        terminal_coords = [path[-1][0], path[-1][1]]
+                        terminal_label, terminal_id = check_terminal_neighbors(terminal_coords[0], terminal_coords[1], visited, id, grid, classes, image.shape)
+                        if terminal_label and terminal_id:
+                            connection_pair = (id, terminal_id)
+                            if connection_pair not in explored_connections:
+                                explored_connections.add(connection_pair)
+                                conexiones.append([label, id, terminal_label, terminal_id, path])
+                        else:
+                            terminal_count += 1
+                            conexiones.append([label, id, terminal_coords, f"terminal_{terminal_count}", path])
 
-                # Limpiar namespaces del SVG de la clase
-                limpiar_namespaces(class_root)
+        output_connections_png_path = os.path.join(output_path, os.path.basename(image_path))
+        cv2.imwrite(output_connections_png_path, gray_image)
 
-                # Obtener dimensiones del SVG de la clase
-                svg_width = parse_dimension(class_root.attrib.get("width", "100px"))
-                svg_height = parse_dimension(class_root.attrib.get("height", "100px"))
+        add_connections_to_svg(svg_path, output_path, os.path.basename(svg_path), conexiones)
 
-                # Calcular escalas manteniendo la relación de aspecto y aplicando el factor de reducción
-                scale = min(w / svg_width, h / svg_height) * scale_factor
+        connections_results.append([output_connections_png_path, svg_path, conexiones])
+        
+        print_amber("Connections done!")
 
-                # Crear un grupo (<g>) con las transformaciones necesarias e incluir el ID
-                cx, cy = x + (w / 2), y + (h / 2)
-                transform = f"translate({cx},{cy}) scale({scale}) translate(-{svg_width / 2},-{svg_height / 2})"
-                if rotation != 0:
-                    transform += f" rotate({rotation})"
-
-                grupo = ET.Element('g', attrib={
-                    'transform': transform,
-                    'id': f"{class_name}_{element_id}"  # Asignar el ID único
-                })
-
-                # Agregar los elementos del SVG de la clase al grupo
-                for elem in list(class_root):
-                    grupo.append(elem)
-
-                # Insertar el grupo en el archivo SVG base
-                root.append(grupo)
-
-                # Registrar la bounding box como insertada
-                inserted_bboxes.append((x, y, w, h))
-
-            except Exception as e:
-                print(f"Error al procesar el SVG de la clase '{class_name}' (ID: {element_id}): {e}")
-                continue
-
-        # Generar la ruta de salida
-        svg_filename = os.path.basename(svg_path)
-        output_svg_path = os.path.join(output_directory, svg_filename)
-
-        # Guardar el archivo SVG actualizado
-        try:
-            tree.write(output_svg_path, encoding="utf-8", xml_declaration=True)
-            print(f"Archivo SVG actualizado guardado en: {output_svg_path}")
-        except Exception as e:
-            print(f"Error al guardar el archivo SVG en '{output_svg_path}': {e}")
+    return connections_results
 
 
 def main():
+    print_amber("ReSin starting. Hello!")
+    
     # OCR arguments
-    input_path, workspace, ocr_output_path, ocr_language, ocr_confidence_threshold, template_library, template_output_path, template_confidence_threshold, iou_confidence_threshold = ReSin_config()
+    input_path, workspace, ocr_output_path, ocr_language, ocr_confidence_threshold, template_library, template_output_path, template_confidence_threshold, iou_confidence_threshold, connections_output_path = ReSin_config()
 
     # OCR
-    processed_images = text_detection(input_path, ocr_output_path, ocr_language, ocr_confidence_threshold)
+    ocr_processed_images = text_detection(input_path, ocr_output_path, ocr_language, ocr_confidence_threshold)
 
     # Template matching
-    TemplateMatching(processed_images, template_output_path, template_library, template_confidence_threshold, iou_confidence_threshold)
+    template_processed_images = template_matching(ocr_processed_images, template_output_path, template_library, template_confidence_threshold, iou_confidence_threshold)
 
-    print('Done')
+    # Connections
+    connections = find_connections(template_processed_images, connections_output_path)
+
+    print_amber("ReSin has finished its work. Done!")
 
 
 # Llamar al main solo si se ejecuta como script principal

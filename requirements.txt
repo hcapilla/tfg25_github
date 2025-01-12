@@ -1,0 +1,6 @@
+argparse
+svgwrite
+Pillow
+surya
+opencv-python
+numpy
