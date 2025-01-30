@@ -126,69 +126,6 @@ def text_detection(input_path, output_path, language, ocr_confidence_threshold):
     Returns:
         list: A list of outputs, each containing the paths to the PNG, SVG, and text detections.
     """
-    def TEST_showConfidence(detection):
-        """
-        Displays the text lines detected by OCR sorted by their confidence score.
-
-        Args:
-            detection (list): A list of OCR detection results, where each result contains text lines with associated confidence scores.
-
-        Returns:
-            None: Prints the text and confidence score of each line, sorted by confidence.
-        """
-        text_lines = detection[0].text_lines
-        text_lines_sorted = sorted(text_lines, key=lambda line: line.confidence)
-
-        for item in text_lines_sorted:
-            print(f"Text: {item.text}, Confidence: {item.confidence}")
-
-    def TEST_drawOriginalPNGBoundingBoxes(image, text_line, draw):
-        """
-        Draws bounding boxes on the given image for a specific text line and calculates the most common color in the bounding box area.
-
-        Args:
-            image (PIL.Image.Image): The image on which to draw the bounding box.
-            text_line (object): The text line object containing bounding box coordinates.
-            draw (PIL.ImageDraw.Draw): The drawing context for the image.
-
-        Returns:
-            None: Draws a rectangle and prints the most common color in the bounding box area.
-        """
-        x_min, y_min = text_line.bbox[0], text_line.bbox[1]
-        x_max, y_max = text_line.bbox[2], text_line.bbox[3]
-
-        draw.rectangle([x_min, y_min, x_max, y_max], outline="red", width=3)
-
-        cropped_area = image.crop((x_min, y_min, x_max, y_max))
-        colors = cropped_area.getcolors(cropped_area.size[0] * cropped_area.size[1])
-        if colors:
-            most_common_color = max(colors, key=lambda x: x[0])[1]
-            print(f"Most common color: {most_common_color}")
-
-    def TEST_drawSVGBoundingBoxes(text_line, output_svg):
-        """
-        Adds a bounding box to the SVG based on the confidence of the text line.
-
-        Args:
-            text_line (object): The text line object containing polygon and confidence attributes.
-            output_svg (svg.Drawing): The SVG drawing object.
-
-        Returns:
-            None: Adds a polygon element to the SVG.
-        """
-        if text_line.confidence < 0.7:
-            boundingBox_color = "red" 
-        elif text_line.confidence < 0.82: 
-            boundingBox_color = "yellow"
-        else:
-            boundingBox_color = "blue"
-
-        output_svg.add(output_svg.polygon(
-            points=text_line.polygon,
-            fill="none",
-            stroke=boundingBox_color,
-            stroke_width=2
-        ))
 
     def deleteByThreshold(detection, ocr_confidence_threshold):
         """
