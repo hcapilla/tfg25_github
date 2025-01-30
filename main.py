@@ -7,6 +7,7 @@ import random
 # SVG 
 import svgwrite as svg 
 from xml.etree import ElementTree as ET
+import copy
 
 # OCR
 from PIL import Image, ImageDraw
@@ -423,6 +424,7 @@ def template_matching(processed_images, output_path, library_path, template_thre
         for elem in element.iter():
             if '}' in elem.tag:
                 elem.tag = elem.tag.split('}', 1)[1]
+        return element
 
     def parse_dimension(value):
         """
@@ -465,125 +467,120 @@ def template_matching(processed_images, output_path, library_path, template_thre
             None
         """
         if not os.path.exists(output_directory):
-            os.makedirs(output_directory)
+            os.makedirs(output_directory)   
 
         missing_svgs = set()
+        output_svg_paths = []   
 
         for processed_image in processed_images:
             if len(processed_image) < 2:
                 print(f"Warning: Incorrect structure in processed_images: {processed_image}.")
-                continue
-            
-            png_path, svg_path = processed_image[:2]
+                continue    
+
+            png_path, svg_path = processed_image[:2]    
 
             if not os.path.exists(svg_path):
                 print(f"The base SVG file '{svg_path}' does not exist. Skipping.")
-                continue
-            
+                continue    
+
             try:
+                # Parse base SVG
                 tree = ET.parse(svg_path)
                 root = tree.getroot()
+                root = clean_namespaces(root)   
 
-                clean_namespaces(root)
+                # Find or create detection layer
+                element_detections_layer = root.find(".//*[@id='element_detections']")
+                if element_detections_layer is None:
+                    element_detections_layer = ET.Element('g', {'id': 'element_detections'})
+                    background_layer = root.find(".//*[@id='background-layer']")
+                    text_layer = root.find(".//*[@id='text-layer']")
 
-                background_layer = root.find(".//*[@id='background-layer']")
-                text_layer = root.find(".//*[@id='text-layer']")
+                    insert_pos = 0
+                    if text_layer is not None:
+                        insert_pos = list(root).index(text_layer)
+                    elif background_layer is not None:
+                        insert_pos = list(root).index(background_layer) + 1
 
-                element_detections_layer = ET.Element('g', attrib={'id': 'element_detections'})
-                if text_layer is not None:
-                    position = list(root).index(text_layer)
-                    root.insert(position, element_detections_layer)
-                elif background_layer is not None:
-                    position = list(root).index(background_layer)
-                    root.insert(position + 1, element_detections_layer)
-                else:
-                    root.append(element_detections_layer)
+                    root.insert(insert_pos, element_detections_layer)   
 
+                # Process detections
+                for detection in detections:
+                    x, y, w, h, rotation, class_name, element_id = detection
+                    svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg") 
+
+                    if not os.path.exists(svg_class_path):
+                        missing_svgs.add(svg_class_path)
+                        # Draw red bounding box
+                        bbox_rect = ET.Element('rect', {
+                            'x': str(x),
+                            'y': str(y),
+                            'width': str(w),
+                            'height': str(h),
+                            'fill': 'none',
+                            'stroke': 'red',
+                            'stroke-width': '2'
+                        })
+                        element_detections_layer.append(bbox_rect)
+                        continue    
+
+                    try:
+                        # Parse template SVG
+                        class_tree = ET.parse(svg_class_path)
+                        class_root = class_tree.getroot()
+                        class_root = clean_namespaces(class_root)   
+
+                        # Get dimensions
+                        if 'viewBox' in class_root.attrib:
+                            _, _, vb_width, vb_height = map(float, class_root.attrib['viewBox'].split())
+                        else:
+                            vb_width = parse_dimension(class_root.get('width', '100'))
+                            vb_height = parse_dimension(class_root.get('height', '100'))    
+
+                        # Calculate scaling factors
+                        scale_x = w / vb_width
+                        scale_y = h / vb_height 
+
+                        # Create transformation
+                        transform = f"translate({x},{y}) scale({scale_x} {scale_y})"
+
+                        # Add rotation around bounding box center if needed
+                        if rotation != 0:
+                            center_x = x + w/2
+                            center_y = y + h/2
+                            transform += f" rotate({rotation},{center_x},{center_y})"   
+
+                        # Create group element
+                        grupo = ET.Element('g', {
+                            'transform': transform,
+                            'id': f"{class_name}_{element_id}"
+                        })  
+
+                        # Copy all elements from template
+                        for elem in class_root:
+                            grupo.append(copy.deepcopy(elem))    
+
+                        element_detections_layer.append(grupo)  
+
+                    except Exception as e:
+                        print(f"Error processing {class_name} (ID {element_id}): {str(e)}")
+                        continue    
+
+                # Save modified SVG
+                output_filename = os.path.basename(svg_path)
+                output_path = os.path.join(output_directory, output_filename)
+                tree.write(output_path, encoding='utf-8', xml_declaration=True)
 
             except Exception as e:
-                print(f"Error loading base SVG file '{svg_path}': {e}")
-                continue
-            
-            inserted_bboxes = []
-
-            for x, y, w, h, rotation, class_name, element_id in detections:
-                svg_class_path = os.path.join(library_path, "general", f"{class_name}.svg")
-
-                if not os.path.exists(svg_class_path):
-                    missing_svgs.add(svg_class_path)
-                    bbox_rect = ET.Element('rect', attrib={
-                        'x': str(x),
-                        'y': str(y),
-                        'width': str(w),
-                        'height': str(h),
-                        'fill': 'none',
-                        'stroke': 'red',
-                        'stroke-width': '2'
-                    })
-                    element_detections_layer.append(bbox_rect)
-                    continue
-                
-                overlapping = any(
-                    not (x + w < bx or bx + bw < x or y + h < by or by + bh < y)
-                    for bx, by, bw, bh in inserted_bboxes
-                )
-
-                if overlapping:
-                    print(f"Bounding box ({x}, {y}, {w}, {h}) overlaps with an existing element. Skipping.")
-                    continue
-                
-                try:
-                    class_tree = ET.parse(svg_class_path)
-                    class_root = class_tree.getroot()
-                    clean_namespaces(class_root)
-
-                    svg_width = parse_dimension(class_root.attrib.get("width", "100px"))
-                    svg_height = parse_dimension(class_root.attrib.get("height", "100px"))
-
-                    scale = min(w / svg_width, h / svg_height) * scale_factor
-
-                    cx, cy = x + (w / 2), y + (h / 2)
-                    transform = f"translate({cx},{cy}) scale({scale}) translate(-{svg_width / 2},-{svg_height / 2})"
-                    if rotation != 0:
-                        transform += f" rotate({rotation})"
-
-                    grupo = ET.Element('g', attrib={
-                        'transform': transform,
-                        'id': f"{class_name}_{element_id}"
-                    })
-
-                    for elem in list(class_root):
-                        grupo.append(elem)
-
-                    element_detections_layer.append(grupo)
-                    inserted_bboxes.append((x, y, w, h))
-
-                except Exception as e:
-                    print(f"Error processing SVG for class '{class_name}' (ID: {element_id}): {e}")
-                    continue
-                
-            svg_filename = os.path.basename(svg_path)
-            output_svg_path = os.path.join(output_directory, svg_filename)
-
-            try:
-                tree.write(output_svg_path, encoding="utf-8", xml_declaration=True)
-                print(f"Updated SVG file saved at: {output_svg_path}")
-            except Exception as e:
-                print(f"Error saving updated SVG file to '{output_svg_path}': {e}")
+                print(f"Error processing {svg_path}: {str(e)}")
+                continue    
 
         if missing_svgs:
-            print("The following SVG files were not found:")
-            for svg in missing_svgs:
-                print(f" - {svg}")
+            print("Missing SVG templates:")
+            for missing in missing_svgs:
+                print(f" - {missing}")  
 
-        if not processed_images:
-            print("No processed images available for analysis.")
-            return []
-
-        if not os.path.exists(output_path):
-            os.makedirs(output_path)
-    
-        return output_svg_path
+        return output_path
 
     class_colors = {}
     output_images = []
